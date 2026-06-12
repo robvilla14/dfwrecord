@@ -1,0 +1,2645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daily Field Work Record v2.2</title>
+
+  <!--
+  ============================================================
+  DAILY FIELD WORK RECORD — v2.2
+  Labor Compliance Solutions
+  ------------------------------------------------------------
+  ARCHITECTURE OVERVIEW
+  This tool is a single HTML file with no external dependencies
+  beyond the fonts loaded from Google Fonts. It runs entirely
+  in the browser — no server, no internet required after load.
+
+  THREE VIEWS:
+    1. Setup    — configure company profile and color scheme
+    2. Dashboard — list of all saved records, action buttons
+    3. Form      — data entry for a single daily record
+
+  Only one view is visible at a time, controlled by toggling
+  the 'active' CSS class on the screen divs.
+
+  DATA STORAGE:
+  All data is saved in the browser's localStorage. Two keys:
+    dfwr_setup   — company profile, logo, color scheme
+    dfwr_records — JSON array of all saved records
+
+  WARNING: Clearing browser data erases all records.
+  Users should export a backup regularly.
+
+  PRINT / PDF:
+  Uses the browser's native print dialog (window.print()).
+  The @media print CSS section controls the print layout.
+  No PDF library is needed — this keeps the code simpler
+  and more understandable for a colleague learning from it.
+
+  COLOR THEMING:
+  The selected color scheme is stored as CSS custom properties
+  (--scheme-primary, --scheme-text) on the document root.
+  Changing these properties instantly cascades to every
+  element that uses var(--scheme-primary) in the CSS — both
+  in the live UI and in the print stylesheet.
+
+  TO ADD DARK MODE IN A FUTURE VERSION:
+  Follow the pattern used in hud11_v1_8.html:
+    1. Add a body.light-mode CSS block with variable overrides
+    2. Add a toggle button in each view header
+    3. Persist preference with localStorage key 'dfwr_lightMode'
+  ============================================================
+  -->
+
+  <style>
+    /* ===========================================================
+       CSS CUSTOM PROPERTIES (DESIGN TOKENS)
+       -----------------------------------------------------------
+       All colors, fonts, and spacing values are defined here as
+       CSS variables (custom properties). Changing a value in
+       :root updates every element that uses it automatically.
+
+       SNOW SOLITUDE PALETTE — matches the rest of the toolkit:
+         --dark   #4A5D6D  headers, primary text
+         --mid    #607890  secondary text, borders
+         --steel  #8A9BB0  muted labels, hints
+         --frost  #C0CEDC  borders, dividers
+         --snow   #E4EAF2  subtle backgrounds
+
+       SCHEME VARIABLES — overridden at runtime by applyScheme():
+         --scheme-primary  the company's brand color
+         --scheme-text     text color on top of the brand color
+    =========================================================== */
+    :root {
+      /* Snow Solitude base palette */
+      --dark:   #4A5D6D;
+      --mid:    #607890;
+      --steel:  #8A9BB0;
+      --frost:  #C0CEDC;
+      --snow:   #E4EAF2;
+
+      /* Scheme colors — set by applyScheme() on load and on selection.
+         Default is Michael Baker Navy, the original form's color. */
+      --scheme-primary: #1B2A47;
+      --scheme-text:    #FFFFFF;
+
+      /* Status colors */
+      --pass:  #28a745;
+      --fail:  #dc3545;
+      --warn:  #ffc107;
+
+      /* Typography */
+      --font:  'Segoe UI', Arial, sans-serif;
+
+      /* Layout helpers */
+      --radius: 12px;
+      --shadow: 0 2px 8px rgba(74, 93, 109, 0.10);
+      --max-w:  860px;
+    }
+
+    /* ===========================================================
+       RESET & BASE
+    =========================================================== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font);
+      background: #F0F3F6;
+      color: var(--dark);
+      min-height: 100vh;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    /* ===========================================================
+       SCREEN SYSTEM
+       -----------------------------------------------------------
+       All three views (setup, dashboard, formView) exist in the
+       DOM at all times. Only the div with class 'active' shows.
+       showScreen() manages which one is visible.
+    =========================================================== */
+    .screen         { display: none; min-height: 100vh; }
+    .screen.active  { display: block; }
+
+    /* ===========================================================
+       SHARED VIEW HEADER
+       -----------------------------------------------------------
+       Used in the form view and setup view. The .view-header-inner
+       container constrains controls to --max-w so they align with
+       the content below on wide desktop screens.
+       position: sticky keeps the header pinned while scrolling.
+    =========================================================== */
+    .view-header {
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      padding: 0 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      border-bottom: 3px solid rgba(255, 255, 255, 0.2);
+    }
+    .view-header-inner {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 0;
+    }
+    .view-title {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Pill buttons used in the view headers */
+    .btn-header {
+      background: none;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      color: var(--scheme-text);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    .btn-header:hover { background: rgba(255, 255, 255, 0.15); }
+
+    /* ===========================================================
+       DASHBOARD VIEW
+       -----------------------------------------------------------
+       The home screen. Shows company branding at the top, then
+       action buttons, then the list of saved records.
+    =========================================================== */
+    #dashboard { background: #F0F3F6; }
+
+    /* Dashboard branding header */
+    .dash-header {
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      padding: 20px 16px 0;
+    }
+    .dash-header-inner {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      padding-bottom: 16px;
+    }
+    .dash-logo-area { flex: 1; min-width: 0; }
+
+    /* Company logo in the dashboard header.
+       display:none until a logo is loaded by updateDashboardHeader(). */
+    .dash-logo-img {
+      max-height: 50px;
+      max-width: 200px;
+      object-fit: contain;
+      display: none;
+      margin-bottom: 8px;
+    }
+    .dash-company-name {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    .dash-tool-name {
+      font-size: 11px;
+      opacity: 0.70;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .dash-setup-btn {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.30);
+      color: var(--scheme-text);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: background 0.2s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .dash-setup-btn:hover { background: rgba(255, 255, 255, 0.22); }
+
+    /* localStorage usage bar — shows how full the storage is.
+       Sits between the header and the body content. */
+    .storage-wrap {
+      background: var(--scheme-primary);
+      padding: 0 16px 10px;
+      border-bottom: 3px solid rgba(255, 255, 255, 0.15);
+    }
+    .storage-inner { max-width: var(--max-w); margin: 0 auto; }
+    .storage-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.60);
+      margin-bottom: 4px;
+    }
+    .storage-track {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.20);
+      border-radius: 2px;
+    }
+    .storage-fill {
+      height: 100%;
+      background: rgba(255, 255, 255, 0.65);
+      border-radius: 2px;
+      transition: width 0.4s;
+    }
+
+    /* Dashboard content area */
+    .dash-body {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* Action button grids */
+    .btn-grid-1 { margin-bottom: 10px; }
+    .btn-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    /* Primary action button (e.g., New Record) */
+    .btn-primary {
+      width: 100%;
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      border: none;
+      border-radius: 10px;
+      padding: 15px 10px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.2s;
+      margin-bottom: 10px;
+    }
+    .btn-primary:hover { opacity: 0.85; }
+
+    /* Secondary action buttons (Export, Import, Clear) */
+    .btn-secondary {
+      background: white;
+      color: var(--dark);
+      border: 1.5px solid var(--frost);
+      border-radius: 10px;
+      padding: 12px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: border-color 0.2s;
+      width: 100%;
+    }
+    .btn-secondary:hover { border-color: var(--mid); }
+
+    /* Destructive action — red text and border */
+    .btn-danger {
+      color: var(--fail);
+      border-color: rgba(220, 53, 69, 0.30);
+    }
+    .btn-danger:hover { border-color: var(--fail); }
+
+    /* Hidden file input — triggered by a visible button's onclick */
+    .input-hidden { display: none; }
+
+    /* Records list label */
+    .list-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: var(--steel);
+      margin-bottom: 10px;
+    }
+
+    /* Individual saved record card in the dashboard list */
+    .record-card {
+      background: white;
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--frost);
+    }
+    .rc-name {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 3px;
+    }
+    .rc-meta {
+      font-size: 12px;
+      color: var(--steel);
+      margin-bottom: 10px;
+    }
+    .rc-actions { display: flex; gap: 8px; }
+
+    /* Small action buttons on record cards */
+    .btn-card {
+      border: 1.5px solid var(--frost);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      background: white;
+      color: var(--dark);
+      transition: background 0.15s;
+    }
+    .btn-card:hover { background: var(--snow); }
+    .btn-card.open  { border-color: var(--scheme-primary); color: var(--scheme-primary); }
+    .btn-card.del   { border-color: rgba(220,53,69,0.30); color: var(--fail); }
+
+    /* Empty state shown when no records are saved yet */
+    .empty-state {
+      text-align: center;
+      padding: 48px 16px;
+      color: var(--steel);
+      font-size: 14px;
+    }
+    .empty-state strong {
+      display: block;
+      font-size: 15px;
+      color: var(--mid);
+      margin-bottom: 8px;
+    }
+
+    /* ===========================================================
+       SETUP VIEW
+       -----------------------------------------------------------
+       Company profile configuration. Values persist in
+       localStorage under the key defined by SETUP_KEY.
+    =========================================================== */
+    #setup { background: #F0F3F6; }
+
+    .setup-body {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* ===========================================================
+       CARD COMPONENT
+       -----------------------------------------------------------
+       Used in both setup and form views. A white rounded card
+       with a dark header band and optional note row.
+    =========================================================== */
+    .card {
+      background: white;
+      border-radius: var(--radius);
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--frost);
+      overflow: hidden;
+    }
+    .card-header {
+      background: var(--dark);
+      color: white;
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+    }
+    .card-note {
+      font-size: 12px;
+      color: var(--steel);
+      padding: 8px 14px;
+      background: var(--snow);
+      border-bottom: 1px solid var(--frost);
+    }
+    .card-body { padding: 16px 14px; }
+
+    /* ===========================================================
+       FORM FIELD COMPONENTS
+       -----------------------------------------------------------
+       .field wraps a label + input vertically.
+       .field-grid places two fields side by side.
+       .field-grid-3 places three fields side by side.
+       .field-grid-4 places four fields side by side.
+       On narrow screens all grids collapse to single column
+       via the responsive media query at the bottom of this file.
+    =========================================================== */
+    .field-grid   { display: grid; grid-template-columns: 1fr 1fr;       gap: 12px; }
+    .field-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr;   gap: 12px; }
+    .field-grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; }
+    .field-full   { grid-column: 1 / -1; }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+
+    .field label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--dark);
+    }
+    .field .sub-label {
+      font-weight: 400;
+      color: var(--steel);
+      font-size: 11px;
+    }
+
+    /* Unified input styles — applies to text, date, time, number, textarea, select */
+    .field input,
+    .field select,
+    .field textarea {
+      padding: 9px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--dark);
+      font-family: var(--font);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      background: white;
+    }
+    .field input:focus,
+    .field select:focus,
+    .field textarea:focus {
+      outline: none;
+      border-color: var(--scheme-primary);
+      box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.07);
+    }
+
+    /* Read-only fields (e.g., Total Hours) get a subtle background
+       to signal they cannot be edited. */
+    .field input[readonly] {
+      background: var(--snow);
+      color: var(--mid);
+      cursor: default;
+    }
+    .field textarea { resize: vertical; }
+
+    /* Work Report auto-expanding textarea.
+       Grows with content until max-height, then scrolls.
+       resize:none removes the drag handle since auto-resize makes it redundant. */
+    #workReport {
+      min-height: 160px;   /* ~8 visible lines on load */
+      max-height: 340px;   /* cap — scrollbar appears here for longer entries */
+      overflow-y: auto;
+      resize: none;
+      transition: height 0.1s ease;
+    }
+
+    /* Small hint text beneath a field */
+    .field-hint {
+      font-size: 11px;
+      color: var(--steel);
+      font-style: italic;
+      margin-top: 2px;
+    }
+
+    /* Character counter for the Work Report field */
+    .char-counter { font-size: 11px; color: var(--steel); text-align: right; margin-top: 3px; }
+    .char-counter.warn { color: var(--warn); font-weight: 600; }
+    .char-counter.over { color: var(--fail); font-weight: 700; }
+
+    /* ===========================================================
+       LOGO UPLOAD AREA (Setup view)
+       -----------------------------------------------------------
+       Clicking anywhere in the dashed area triggers the hidden
+       file input. The logo is shown as a preview after upload.
+       The Remove button deletes it from setup storage.
+    =========================================================== */
+    .logo-area {
+      border: 2px dashed var(--frost);
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .logo-area:hover { border-color: var(--mid); }
+
+    #logoPreview {
+      max-height: 60px;
+      max-width: 220px;
+      object-fit: contain;
+      display: none;
+      margin: 0 auto 8px;
+    }
+    .logo-upload-hint { font-size: 12px; color: var(--steel); }
+
+    #btnRemoveLogo {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--fail);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--font);
+      margin-top: 6px;
+    }
+
+    /* ===========================================================
+       COLOR SCHEME SELECTOR (Setup view)
+       -----------------------------------------------------------
+       Displays each scheme as a swatch button. Clicking one calls
+       selectScheme() which applies the color to the UI immediately
+       so the user sees the change before saving.
+    =========================================================== */
+    .scheme-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+      gap: 8px;
+    }
+    .scheme-btn {
+      border: 2px solid var(--frost);
+      border-radius: 8px;
+      padding: 10px 6px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--steel);
+      background: white;
+      transition: all 0.15s;
+      font-family: var(--font);
+    }
+    .scheme-btn:hover   { border-color: var(--mid); color: var(--dark); }
+    .scheme-btn.active  { border-color: var(--dark); color: var(--dark); background: var(--snow); }
+    .scheme-swatch {
+      width: 40px;
+      height: 26px;
+      border-radius: 4px;
+      border: 1px solid rgba(0,0,0,0.10);
+    }
+
+    /* Setup save button */
+    .btn-setup-save {
+      width: 100%;
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      border: none;
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.2s;
+      margin-top: 4px;
+    }
+    .btn-setup-save:hover { opacity: 0.85; }
+
+    /* ===========================================================
+       FORM VIEW
+       -----------------------------------------------------------
+       Data entry screen for a single daily field work record.
+       Sections are grouped into cards matching the original form.
+    =========================================================== */
+    #formView { background: #F0F3F6; }
+
+    .form-body {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* ===========================================================
+       WORK TYPE CHECKBOX CHIPS
+       -----------------------------------------------------------
+       Each work type is a styled label wrapping a checkbox.
+       The .checked class is toggled on the label to give a
+       visual "selected" state. The chip pattern gives a larger
+       tap target than a raw checkbox on touchscreen.
+    =========================================================== */
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .chip-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 13px;
+      border: 2px solid var(--frost);
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--dark);
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .chip-label:hover  { border-color: var(--mid); }
+    .chip-label.checked {
+      border-color: var(--scheme-primary);
+      background: var(--snow);
+      font-weight: 600;
+    }
+    .chip-label input[type="checkbox"] {
+      accent-color: var(--scheme-primary);
+      cursor: pointer;
+    }
+
+    /* "Other" text fields — hidden until the Other checkbox is checked.
+       Both Work Type Other and Attachment Other use this reveal pattern. */
+    #wtOtherText, #attOtherText {
+      display: none;
+      padding: 7px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 20px;
+      font-size: 13px;
+      color: var(--dark);
+      font-family: var(--font);
+      min-width: 120px;
+      flex: 1;
+    }
+    #wtOtherText:focus {
+      outline: none;
+      border-color: var(--scheme-primary);
+    }
+
+    /* ===========================================================
+       ATTACHMENT CHECKBOXES
+       -----------------------------------------------------------
+       Same chip pattern as work type, but rectangular chips
+       for a different visual treatment. Only indicate which
+       physical documents are attached — no file upload here.
+    =========================================================== */
+    .attach-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .attach-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--dark);
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .attach-chip:hover  { border-color: var(--mid); }
+    .attach-chip.checked {
+      border-color: var(--scheme-primary);
+      background: var(--snow);
+      font-weight: 600;
+    }
+    .attach-chip input[type="checkbox"] {
+      accent-color: var(--scheme-primary);
+      cursor: pointer;
+    }
+
+    /* Bottom save button in form view (matches header Save) */
+    .btn-form-save {
+      width: 100%;
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      border: none;
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.2s;
+      margin-bottom: 24px;
+    }
+    .btn-form-save:hover { opacity: 0.85; }
+
+    /* ===========================================================
+       TOAST NOTIFICATION
+       -----------------------------------------------------------
+       Brief confirmation message shown after save, delete, import.
+       Appears at the bottom, fades in, then fades out after 2.5s.
+       showToast(msg) is the function that triggers it.
+    =========================================================== */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(16px);
+      background: var(--dark);
+      color: white;
+      padding: 10px 22px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0;
+      transition: opacity 0.3s, transform 0.3s;
+      z-index: 9999;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ===========================================================
+       RESPONSIVE ADJUSTMENTS
+       -----------------------------------------------------------
+       On narrow screens (phone, small tablet), multi-column
+       grids collapse to a single column for comfortable entry.
+    =========================================================== */
+    @media (max-width: 600px) {
+      .field-grid,
+      .field-grid-3,
+      .field-grid-4  { grid-template-columns: 1fr; }
+      .btn-grid-3    { grid-template-columns: 1fr 1fr; }
+    }
+
+    /* ===========================================================
+       PRINT STYLES
+       -----------------------------------------------------------
+       Applied only when the user prints or exports to PDF via
+       the browser's print dialog. These rules reproduce the
+       original Michael Baker Daily Field Work Record layout.
+
+       KEY TECHNIQUES:
+       - Elements with class 'no-print' are hidden on print
+       - Elements with class 'print-only' are visible only on print
+       - The print footer uses var(--scheme-primary) for the band
+         color, which carries through from the setup selection
+       - -webkit-print-color-adjust: exact forces background colors
+         to print (they are suppressed by default in most browsers)
+    =========================================================== */
+    @page {
+	   size: letter;
+	   margin: 0.35in;
+	}
+	@media print {
+      /* Hide all screen navigation and UI chrome */
+      #dashboard, #setup { display: none !important; }
+      .view-header, .no-print, .toast { display: none !important; }
+	  
+	html,
+	body {
+	   width: 100%;
+	   height: auto;
+	}
+
+      /* Reset body for clean print output */
+      body { background: white; margin: 0; padding: 0; }
+
+      /* Make form view visible for print regardless of .active class */
+      #formView { display: block !important; background: white; }
+
+      /* CRITICAL: Hide all screen UI cards — they must not appear on print.
+         The actual print content lives in #printContent, .print-header,
+         and .print-footer which are siblings of .form-body, not inside it. */
+      .form-body { display: none !important; }
+
+      /* Show print-only elements */
+      .print-only { display: block !important; }
+
+      /* ── Print Header ── */
+      .print-header {
+        display: flex !important;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6pt 0 4pt;
+        border-bottom: 2pt solid #000;
+        margin-bottom: 6pt;
+      }
+      .print-logo {
+        max-height: 38pt;
+        max-width: 150pt;
+        object-fit: contain;
+      }
+      .print-title {
+        font-size: 15pt;
+        font-weight: 700;
+        text-align: center;
+        flex: 1;
+      }
+      .print-page { font-size: 10pt; text-align: right; min-width: 60pt; }
+
+      /* ── Print Sections ── */
+      /* Remove screen-only decorations */
+      .card { box-shadow: none !important; border: none !important; margin-bottom: 6pt !important; }
+      .card-header, .card-note { display: none !important; }
+      .card-body { padding: 0 !important; }
+
+      /* ── Print Field Rows ── */
+      .print-row {
+        display: flex !important;
+        gap: 12pt;
+        margin-bottom: 4pt;
+        border-bottom: 1pt solid #bbb;
+        padding-bottom: 1pt;
+        align-items: flex-end;
+      }
+      .print-cell { flex: 1; display: flex; flex-direction: column; }
+      .print-cell.w2 { flex: 2; }
+      .print-cell.w3 { flex: 3; }
+      .pf-label {
+        font-size: 7.5pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #444;
+        margin-bottom: 1pt;
+      }
+      .pf-value { font-size: 10pt; min-height: 11pt; }
+
+      /* Cap multi-line personnel rows so they cannot push the report
+         and footer onto a second page. Crew and Construction Crew get
+         up to three printed lines; Visitors and Native American Monitor
+         get up to two printed lines. */
+      #prCrew,
+      #prConstructionCrew {
+        white-space: pre-line;
+        overflow: hidden;
+        max-height: 33pt;
+        line-height: 11pt;
+      }
+
+      #prVisitors,
+      #prNativeMonitor {
+        white-space: pre-line;
+        overflow: hidden;
+        max-height: 22pt;
+        line-height: 11pt;
+      }
+
+      /* Work Type row */
+      .print-worktype {
+        display: flex !important;
+        gap: 14pt;
+        margin-bottom: 4pt;
+        border-bottom: 1pt solid #bbb;
+        padding-bottom: 2pt;
+        flex-wrap: wrap;
+      }
+      .print-wt-item { font-size: 10pt; display: flex; align-items: center; gap: 4pt; }
+      .print-wt-box {
+        width: 10pt; height: 10pt;
+        border: 1pt solid #333;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 8pt;
+      }
+
+      /* Work Report — fixed height with ruled lines so it cannot
+         overflow to a second page. The background-image creates
+         the horizontal ruled lines matching the original form.
+         Height reduced to 220pt for a more reliable one-page PDF. */
+      .print-report-area {
+        min-height: 245pt;
+        max-height: 245pt;
+        overflow: hidden;
+        font-size: 9pt;
+        line-height: 13.5pt;
+        background-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0,
+          transparent 12.25pt,
+          #ccc 12.25pt,
+          #ccc 13.25pt,
+          transparent 13.25pt,
+          transparent 13.5pt
+        );
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        padding-top: 2pt;
+        padding-bottom: 4pt;
+        border-bottom: 1pt solid #999;
+        margin-bottom: 4pt;
+        word-wrap: break-word;
+      }
+
+      .print-report-area {
+        position: relative;
+      }
+
+      /* Attachments row — normal document flow, appears directly after
+         the work report. NOT position:fixed (that caused a blank page 1). */
+      .print-attach-fixed {
+        display: flex !important;
+        gap: 14pt;
+        align-items: center;
+        font-size: 10pt;
+        flex-wrap: wrap;
+        padding: 4pt 0 2pt;
+        border-top: 1pt solid #bbb;
+        margin-top: 6pt;
+      }
+      .print-attach-label { font-size: 8pt; font-weight: 700; text-transform: uppercase; margin-right: 6pt; }
+
+      /* ── Print Footer ──
+         Normal document flow — no position:fixed (that caused two pages).
+         Appears at the end of printContent after the attachments row.
+         -webkit-print-color-adjust forces background color to print. */
+      .print-footer {
+        background: var(--scheme-primary) !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+        color: var(--scheme-text) !important;
+        padding: 5pt 14pt;
+        font-size: 8pt;
+        display: flex !important;
+        justify-content: center;
+        align-items: center;
+        gap: 18pt;
+        margin-top: 4pt;
+      }
+    }
+
+    /* These classes are hidden in the browser (only shown on print) */
+    .print-only   { display: none; }
+    .print-footer { display: none; }
+    .print-header { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- ============================================================
+     SETUP VIEW
+     Company profile configuration — runs once, persists forever.
+     Accessed from the dashboard header "Setup" button or
+     automatically on first use if no setup data exists.
+     ============================================================ -->
+<div id="setup" class="screen">
+  <div class="view-header">
+    <div class="view-header-inner">
+      <button class="btn-header" onclick="closeSetup()">Back</button>
+      <span class="view-title">Company Setup</span>
+    </div>
+  </div>
+  <div class="setup-body">
+
+    <!-- Company Profile card -->
+    <div class="card">
+      <div class="card-header">Company Profile</div>
+      <div class="card-note">Saved once — appears on every printed form header and footer.</div>
+      <div class="card-body">
+        <div class="field-grid" style="gap:12px">
+          <div class="field field-full">
+            <label>Company Name</label>
+            <input type="text" id="setupCompany" placeholder="Your company name">
+          </div>
+          <div class="field">
+            <label>Address</label>
+            <input type="text" id="setupAddress" placeholder="Street address">
+          </div>
+          <div class="field">
+            <label>City, State ZIP</label>
+            <input type="text" id="setupCityState" placeholder="City, CA 00000">
+          </div>
+          <div class="field">
+            <label>Phone</label>
+            <!-- onblur formats 10-digit numbers to (XXX) XXX-XXXX when the user leaves the field -->
+            <input type="tel" id="setupPhone" placeholder="(000) 000-0000"
+                   onblur="formatPhone(this)">
+          </div>
+          <div class="field">
+            <label>Contact Email</label>
+            <input type="email" id="setupEmail" placeholder="contact@company.com">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logo Upload card
+         Clicking anywhere in the dashed area triggers the file picker.
+         The logo is resized to max 300px wide and stored as base64. -->
+    <div class="card">
+      <div class="card-header">Company Logo</div>
+      <div class="card-note">PNG or JPG recommended. Max display width: 300px. Stored locally — not uploaded anywhere.</div>
+      <div class="card-body">
+        <div class="logo-area" onclick="document.getElementById('logoFileInput').click()">
+          <img id="logoPreview" src="" alt="Logo preview">
+          <div class="logo-upload-hint" id="logoUploadHint">Click to upload logo (PNG, JPG)</div>
+          <button id="btnRemoveLogo" onclick="removeLogo(event)">Remove logo</button>
+        </div>
+        <input type="file" id="logoFileInput" class="input-hidden" accept="image/*" onchange="handleLogoUpload(event)">
+      </div>
+    </div>
+
+    <!-- Color Scheme card
+         The selected color drives the header, footer, and print footer.
+         Michael Baker Navy (#1B2A47) is the default matching the original form. -->
+    <div class="card">
+      <div class="card-header">Color Scheme</div>
+      <div class="card-note">Sets the color of the app header, record card accents, and the printed form's footer band. Selecting a scheme previews it immediately.</div>
+      <div class="card-body">
+        <!-- Scheme buttons are built dynamically by buildSchemeButtons() in JS.
+             This makes it easy to add new schemes by editing the SCHEMES object. -->
+        <div class="scheme-grid" id="schemeGrid"></div>
+      </div>
+    </div>
+
+    <button class="btn-setup-save" onclick="saveSetup()">Save Setup</button>
+
+  </div>
+</div>
+
+
+<!-- ============================================================
+     DASHBOARD VIEW
+     The home screen. Shown on page load (or after setup).
+     Lists all saved records and provides action buttons.
+     ============================================================ -->
+<div id="dashboard" class="screen active">
+
+  <!-- Branding header — populated by updateDashboardHeader() -->
+  <div class="dash-header">
+    <div class="dash-header-inner">
+      <div class="dash-logo-area">
+        <!-- Logo is hidden until updateDashboardHeader() sets src and shows it -->
+        <img id="dashLogo" class="dash-logo-img" src="" alt="Company logo">
+        <div class="dash-company-name" id="dashCompanyName">Daily Field Work Record</div>
+        <div class="dash-tool-name">Labor Compliance Solutions</div>
+      </div>
+      <button class="dash-setup-btn" onclick="openSetup()">Setup</button>
+    </div>
+  </div>
+
+  <!-- localStorage usage bar -->
+  <div class="storage-wrap">
+    <div class="storage-inner">
+      <div class="storage-row">
+        <span>localStorage</span>
+        <span id="storageText">0.0 KB / ~5 MB</span>
+      </div>
+      <div class="storage-track">
+        <div class="storage-fill" id="storageFill" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dash-body">
+
+    <!-- New Record — the primary action -->
+    <div class="btn-grid-1">
+      <button class="btn-primary" onclick="newRecord()">+ New Record</button>
+    </div>
+
+    <!-- Backup management buttons -->
+    <div class="btn-grid-3">
+      <button class="btn-secondary" onclick="exportBackup()">Export Backup</button>
+      <!-- Import triggers the hidden multi-file input below -->
+      <button class="btn-secondary" onclick="document.getElementById('importInput').click()">Import Backup</button>
+      <button class="btn-secondary btn-danger" onclick="clearAllRecords()">Clear All</button>
+    </div>
+
+    <!-- Hidden file input for multi-file import.
+         The 'multiple' attribute allows selecting several JSON files at once.
+         All selected files are merged by importBackup(). -->
+    <input type="file" id="importInput" class="input-hidden" accept=".json" multiple onchange="importBackup(event)">
+
+    <!-- Records list — rendered by renderDashboard() -->
+    <div class="list-label">Saved Records</div>
+    <div id="recordsList"></div>
+
+  </div>
+</div>
+
+
+<!-- ============================================================
+     FORM VIEW
+     Data entry screen for a single daily field work record.
+     Section order matches the original Michael Baker paper form.
+     ============================================================ -->
+<div id="formView" class="screen">
+
+  <!-- Sticky header — always visible while scrolling.
+       Contains Back, the record name, Save, and Print.
+       .no-print hides this from the printed output. -->
+  <div class="view-header no-print">
+    <div class="view-header-inner">
+      <button class="btn-header" onclick="goBack()">Back</button>
+      <span class="view-title" id="formTitle">New Record</span>
+      <button class="btn-header" onclick="saveRecord()">Save</button>
+      <button class="btn-header" onclick="printRecord()">Print</button>
+    </div>
+  </div>
+
+  <!-- ── PRINT HEADER (hidden in browser, shown on print) ──────────
+       Reproduces the original form's header: logo left, title center,
+       page number right. Populated by populatePrintView() before printing.
+       ---------------------------------------------------------------- -->
+  <div class="print-header print-only" id="printHeader">
+    <img id="printLogo" class="print-logo" src="" alt="" style="display:none">
+    <div class="print-title">Daily Field Work Record</div>
+    <!-- The total pages value is injected by populatePrintView()
+         from the totalPages field the user filled in on the form. -->
+    <div class="print-page">Page 1 of <span id="prTotalPages">___</span></div>
+  </div>
+
+  <div class="form-body">
+
+    <!-- ── SECTION 1: Job Information ──────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">Job Information</div>
+      <div class="card-body">
+        <div class="field-grid" style="margin-bottom:12px">
+          <div class="field">
+            <label>Job Number</label>
+            <input type="text" id="jobNumber" placeholder="e.g. 12345">
+          </div>
+          <div class="field">
+            <label>Job Name</label>
+            <input type="text" id="jobName" placeholder="Project name">
+          </div>
+        </div>
+        <!-- Date, Work Location, and Total Pages in a 3-column row.
+             Total Pages populates the 'Page 1 of ___' field on the printed form.
+             The user enters the total page count including any attached sheets. -->
+        <div class="field-grid-3">
+          <div class="field">
+            <label>Date</label>
+            <!-- Auto-fills to today when a new record is created -->
+            <input type="date" id="recordDate">
+          </div>
+          <div class="field">
+            <label>Work Location</label>
+            <input type="text" id="workLocation" placeholder="Site address or GPS description">
+          </div>
+          <div class="field">
+            <label>Total Pages</label>
+            <!-- Small number input — user enters total page count
+                 (e.g., 2 if one supplementary sheet is attached).
+                 Populates 'Page 1 of X' in the print header. -->
+            <input type="number" id="totalPages" placeholder="1" min="1" max="99"
+                   style="max-width:90px">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 2: Work Type ─────────────────────────────────────
+         Chip-style checkboxes. The "Other" chip reveals a text input.
+         Each label wraps its checkbox for a larger tap target on tablet.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Work Type</div>
+      <div class="card-body">
+        <div class="chip-row">
+          <!-- updateChipStyle() toggles the .checked class on the label
+               to give visual feedback without needing custom CSS checkboxes. -->
+          <label class="chip-label" id="lbSurvey">
+            <input type="checkbox" id="wtSurvey" onchange="updateChipStyle('lbSurvey',this)">
+            Survey
+          </label>
+          <label class="chip-label" id="lbArch">
+            <input type="checkbox" id="wtArch" onchange="updateChipStyle('lbArch',this)">
+            Archaeological Excavation
+          </label>
+          <label class="chip-label" id="lbMonitor">
+            <input type="checkbox" id="wtMonitor" onchange="updateChipStyle('lbMonitor',this)">
+            Monitoring
+          </label>
+          <label class="chip-label" id="lbOther">
+            <input type="checkbox" id="wtOther" onchange="updateChipStyle('lbOther',this);toggleWtOther(this)">
+            Other
+          </label>
+          <!-- Revealed when "Other" is checked -->
+          <input type="text" id="wtOtherText" placeholder="Specify...">
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 3: Personnel ─────────────────────────────────────
+         Crew is a textarea because multiple people may need to be listed.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Personnel</div>
+      <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label>Your Name</label>
+          <input type="text" id="yourName" placeholder="Full name">
+        </div>
+        <div class="field">
+          <label>Crew <span class="sub-label">(name and affiliation)</span></label>
+          <!-- rows="3" gives two visible lines of text plus a partial third
+               to indicate more space is available. resize:vertical lets
+               users expand if needed. -->
+          <textarea id="crew" rows="3" placeholder="List crew members and affiliations, one per line"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 4: Time ──────────────────────────────────────────
+         Time In / Time Out use <input type="time"> which provides a
+         native time picker on all devices. The value is stored internally
+         as HH:MM in 24-hour format.
+
+         Total Hours is read-only and auto-calculated by calcTotalHours()
+         whenever Time In, Time Out, or Lunch changes.
+
+         Lunch is entered in minutes (not HH:MM) for simplicity.
+         The calculation converts everything to minutes, subtracts lunch,
+         then divides by 60 to get decimal hours.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Time</div>
+      <div class="card-body">
+        <div class="field-grid-4">
+          <div class="field">
+            <label>Time In</label>
+            <input type="time" id="timeIn" onchange="calcTotalHours()">
+          </div>
+          <div class="field">
+            <label>Time Out</label>
+            <input type="time" id="timeOut" onchange="calcTotalHours()">
+          </div>
+          <div class="field">
+            <label>Lunch <span class="sub-label">(mins)</span></label>
+            <input type="number" id="lunchMins" placeholder="30" min="0" max="240" oninput="calcTotalHours()">
+          </div>
+          <div class="field">
+            <label>Total Hours</label>
+            <!-- readonly — never edited by the user directly -->
+            <input type="text" id="totalHours" readonly placeholder="Auto">
+            <span class="field-hint">Auto-calculated</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 5: Additional Personnel ─────────────────────────
+         All three fields use textareas because each may contain
+         multiple names and affiliations across several lines.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Additional Personnel</div>
+      <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label>Visitors <span class="sub-label">(name and affiliation)</span></label>
+          <textarea id="visitors" rows="3" placeholder="List visitors and affiliations"></textarea>
+        </div>
+        <div class="field">
+          <label>Native American Monitor <span class="sub-label">(name and affiliation)</span></label>
+          <textarea id="nativeMonitor" rows="3" placeholder="Monitor name and affiliation"></textarea>
+        </div>
+        <div class="field">
+          <label>Construction Crew <span class="sub-label">(name and affiliation)</span></label>
+          <textarea id="constructionCrew" rows="3" placeholder="Crew names and affiliations"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 6: Vehicle ────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">Vehicle</div>
+      <div class="card-body">
+        <div class="field-grid-3">
+          <div class="field">
+            <label>Vehicle</label>
+            <input type="text" id="vehicle" placeholder="Make, model, or ID">
+          </div>
+          <div class="field">
+            <label>Start Location</label>
+            <input type="text" id="startLocation" placeholder="Starting point">
+          </div>
+          <div class="field">
+            <label>Total Miles</label>
+            <input type="number" id="totalMiles" placeholder="0" min="0" step="0.1">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 7: Work Report ────────────────────────────────────
+         Free text narrative. The maxlength attribute prevents typing
+         beyond 2,200 characters. The oninput handler updates the live
+         character counter. On print, the area has a fixed max-height
+         to prevent the report from overflowing to a second page.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Work Report</div>
+      <div class="card-note">Methods, work completed, stops/starts, discoveries, observations, soils, landforms, vegetation, disturbances, etc.</div>
+      <div class="card-body">
+        <div class="field">
+          <!-- rows="10" is overridden by the #workReport CSS min-height.
+               autoResizeTextarea() expands the box as the user types.
+               updateCharCount() refreshes the character counter below. -->
+          <textarea id="workReport" rows="10" maxlength="2200"
+            placeholder="Enter your field observations and work summary..."
+            oninput="autoResizeTextarea(this); updateCharCount()"></textarea>
+          <div class="char-counter" id="charCounter">0 / 2200</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 8: Attachments ────────────────────────────────────
+         Checkbox indicators only — these mark which physical documents
+         are attached to this record. No files are uploaded or stored.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Attachments</div>
+      <div class="card-note">Check all physical documents attached to this record.</div>
+      <div class="card-body">
+        <div class="attach-row">
+          <label class="attach-chip" id="lcPhoto">
+            <input type="checkbox" id="attPhoto" onchange="updateChipStyle('lcPhoto',this)">
+            Photo Log
+          </label>
+          <label class="attach-chip" id="lcMap">
+            <input type="checkbox" id="attMap" onchange="updateChipStyle('lcMap',this)">
+            Map
+          </label>
+          <label class="attach-chip" id="lcSupp">
+            <input type="checkbox" id="attSupp" onchange="updateChipStyle('lcSupp',this)">
+            Supplementary Sheets
+          </label>
+          <label class="attach-chip" id="lcGps">
+            <input type="checkbox" id="attGps" onchange="updateChipStyle('lcGps',this)">
+            GPS Log
+          </label>
+          <label class="attach-chip" id="lcOther">
+            <!-- toggleAttOther() reveals the text field when this is checked -->
+            <input type="checkbox" id="attOther"
+                   onchange="updateChipStyle('lcOther',this);toggleAttOther(this)">
+            Other
+          </label>
+          <!-- Revealed when "Other" is checked — user types what the attachment is.
+               Mirrors the blank line after "Other" on the original paper form. -->
+          <input type="text" id="attOtherText" placeholder="Specify...">
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom save button — same action as the header Save button.
+         Provides convenience without scrolling back to the top.
+         .no-print hides it from the printed output. -->
+    <!-- This bottom Save button saves AND returns to the dashboard.
+         The header Save button (above) saves in place for mid-entry saves.
+         saveAndReturn() calls saveRecord() then navigates back after a
+         brief delay so the user sees the 'Saved' confirmation toast. -->
+    <button class="btn-form-save no-print" onclick="saveAndReturn()">Save Record</button>
+
+  </div><!-- /form-body -->
+
+  <!-- ── PRINT FIELD ROWS (hidden in browser, shown on print) ──────
+       DOM ORDER (important for correct print output):
+         1. printContent  — all data rows + work report (normal flow)
+         2. printAttachRow — attachments row (normal flow, after content)
+         3. printFooter   — footer band (normal flow, always last)
+       All three are position:static so nothing creates a phantom page.
+       ---------------------------------------------------------------- -->
+<div class="print-only" id="printContent" style="padding:0">
+
+    <!-- Row 1: Job Number | Job Name | Date -->
+    <div class="print-row">
+      <div class="print-cell"><div class="pf-label">Job Number</div><div class="pf-value" id="prJobNumber"></div></div>
+      <div class="print-cell w2"><div class="pf-label">Job Name</div><div class="pf-value" id="prJobName"></div></div>
+      <div class="print-cell"><div class="pf-label">Date</div><div class="pf-value" id="prDate"></div></div>
+    </div>
+
+    <!-- Row 2: Work Location -->
+    <div class="print-row">
+      <div class="print-cell w3"><div class="pf-label">Work Location</div><div class="pf-value" id="prWorkLocation"></div></div>
+    </div>
+
+    <!-- Row 3: Work Type checkboxes -->
+    <div class="print-worktype" id="prWorkType"></div>
+
+    <!-- Row 4: Your Name -->
+    <div class="print-row">
+      <div class="print-cell w3"><div class="pf-label">Your Name</div><div class="pf-value" id="prYourName"></div></div>
+    </div>
+
+    <!-- Row 5: Crew -->
+    <div class="print-row">
+      <div class="print-cell w3">
+        <div class="pf-label">Crew (name and affiliation)</div>
+        <div class="pf-value" id="prCrew" style="white-space:pre-line"></div>
+      </div>
+    </div>
+
+    <!-- Row 6: Time In | Time Out | Lunch | Total Hours -->
+    <div class="print-row">
+      <div class="print-cell"><div class="pf-label">Time In</div><div class="pf-value" id="prTimeIn"></div></div>
+      <div class="print-cell"><div class="pf-label">Time Out</div><div class="pf-value" id="prTimeOut"></div></div>
+      <div class="print-cell"><div class="pf-label">Lunch</div><div class="pf-value" id="prLunch"></div></div>
+      <div class="print-cell"><div class="pf-label">Total Hours</div><div class="pf-value" id="prTotalHours"></div></div>
+    </div>
+
+    <!-- Row 7: Visitors -->
+    <div class="print-row">
+      <div class="print-cell w3">
+        <div class="pf-label">Visitors (name and affiliation)</div>
+        <div class="pf-value" id="prVisitors" style="white-space:pre-line"></div>
+      </div>
+    </div>
+
+    <!-- Row 8: Native American Monitor -->
+    <div class="print-row">
+      <div class="print-cell w3">
+        <div class="pf-label">Native American Monitor (name and affiliation)</div>
+        <div class="pf-value" id="prNativeMonitor" style="white-space:pre-line"></div>
+      </div>
+    </div>
+
+    <!-- Row 9: Construction Crew -->
+    <div class="print-row">
+      <div class="print-cell w3">
+        <div class="pf-label">Construction Crew (name and affiliation)</div>
+        <div class="pf-value" id="prConstructionCrew" style="white-space:pre-line"></div>
+      </div>
+    </div>
+
+    <!-- Row 10: Vehicle | Start Location | Total Miles -->
+    <div class="print-row">
+      <div class="print-cell"><div class="pf-label">Vehicle</div><div class="pf-value" id="prVehicle"></div></div>
+      <div class="print-cell"><div class="pf-label">Start Location</div><div class="pf-value" id="prStartLocation"></div></div>
+      <div class="print-cell"><div class="pf-label">Total Miles</div><div class="pf-value" id="prTotalMiles"></div></div>
+    </div>
+
+    <!-- Row 11: Work Report label -->
+    <div style="margin-bottom:4pt">
+      <span class="pf-label">Work Report</span>
+      <span style="font-size:7pt;color:#666"> (Methods, Work Completed, Stops/Starts, Discoveries, Observations, Soils, Landforms/Topography, Vegetation, Disturbances, etc.)</span>
+    </div>
+
+    <!-- Work Report text in a fixed-height ruled area -->
+    <div class="print-report-area" id="prWorkReport"></div>
+
+
+  </div><!-- /printContent -->
+
+  <!-- Attachments row — in normal document flow after the work report.
+       Populated by populatePrintView(). Hidden in browser (.print-only). -->
+  <div class="print-attach-fixed print-only" id="printAttachRow"></div>
+
+  <!-- Footer band — always last in document flow.
+       Company contact info in the selected scheme color.
+       Populated by populatePrintView(). Hidden in browser (.print-only). -->
+  <div class="print-footer print-only" id="printFooter">
+    <span id="pfAddress"></span>
+    <span id="pfPhone"></span>
+    <span id="pfEmail"></span>
+  </div>
+
+</div><!-- /formView -->
+
+<!-- Toast notification — shown briefly after user actions -->
+<div class="toast" id="toast"></div>
+
+
+<script>
+// ============================================================================
+// DAILY FIELD WORK RECORD — JavaScript
+// ============================================================================
+//
+// DATA FLOW:
+//   1. Page loads → DOMContentLoaded fires → loadSetup() + renderDashboard()
+//   2. User taps "New Record" → blankRecord() creates empty data object
+//   3. User fills the form → each field's oninput writes to currentRecord
+//   4. User taps Save → saveRecord() writes currentRecord to localStorage
+//   5. User taps Print → populatePrintView() fills print-only elements
+//      → window.print() opens the browser's print dialog
+//
+// NOTE: There is no server. All data lives in the browser's localStorage.
+// Clearing browser data erases everything. Advise users to export regularly.
+//
+// ============================================================================
+
+
+// ── CONSTANTS ────────────────────────────────────────────────────────────────
+// localStorage key names. If you change these, existing saved data becomes
+// inaccessible (the app won't be able to find it). Keep these stable.
+const STORE_KEY = 'dfwr_records'; // Array of saved daily field work records
+const SETUP_KEY = 'dfwr_setup';   // Company profile and color scheme
+
+// Maximum characters in the Work Report field.
+// Set to 2200 to better use the available ruled work report lines while the fixed 220pt print area keeps the form to one page.
+// Users needing more space should check "Supplementary Sheets" in attachments.
+const MAX_REPORT_CHARS = 2200;
+
+// ── COLOR SCHEMES ────────────────────────────────────────────────────────────
+// Each scheme has:
+//   primary — the main brand color (header, footer band, card open buttons)
+//   text    — text color on top of the primary (always white or black)
+//   label   — display name shown in the scheme selector
+//
+// The default is 'navy' which matches the Michael Baker International form.
+//
+// TO ADD A NEW SCHEME: add a new key with primary/text/label values.
+// The key string is what gets saved in localStorage as setup.scheme.
+const SCHEMES = {
+  navy:     { primary: '#1B2A47', text: '#FFFFFF', label: 'MB' },
+  slate:    { primary: '#1E3A5F', text: '#FFFFFF', label: 'Slate Blue'    },
+  charcoal: { primary: '#2C2C2E', text: '#FFFFFF', label: 'Charcoal'      },
+  forest:   { primary: '#1A3C28', text: '#FFFFFF', label: 'Forest'        },
+  maroon:   { primary: '#7B1D1D', text: '#FFFFFF', label: 'Maroon'        },
+};
+
+
+// ── RUNTIME STATE ─────────────────────────────────────────────────────────────
+// currentRecord holds the record currently being edited in the form view.
+// It is set by newRecord() and openRecord(), and written by saveRecord().
+// It is null when the form is not open.
+let currentRecord = null;
+
+// currentScheme tracks which scheme key is selected.
+// Updated by selectScheme() and saved to setup.
+let currentScheme = 'navy';
+
+
+// ── DATA MODEL ───────────────────────────────────────────────────────────────
+// blankRecord() returns a new record with all fields at their default values.
+// This object is the authoritative definition of what a record contains.
+//
+// IF YOU ADD A NEW FIELD to the form:
+//   1. Add it here with a default value
+//   2. Add the HTML input in the form view above
+//   3. Add it to populateForm() to load saved values
+//   4. Add it to saveRecord() to capture the value on save
+//   5. Add it to populatePrintView() to display it on print
+function blankRecord() {
+  return {
+    // ── System fields (auto-managed) ──
+    id:      Date.now().toString(),          // Unique identifier for this record
+    created: new Date().toISOString(),        // ISO timestamp when created
+    updated: new Date().toISOString(),        // ISO timestamp of last save
+
+    // ── Page Count ──
+    // Maps to the 'Page 1 of ___' field in the print header.
+    // The user enters the total number of pages (including attachments)
+    // so the printed form shows 'Page 1 of 2' rather than 'Page 1 of ___'.
+    totalPages: '',
+
+    // ── Job Information ──
+    jobNumber:    '',
+    jobName:      '',
+    date:         new Date().toISOString().slice(0, 10), // 'YYYY-MM-DD', defaults to today
+    workLocation: '',
+
+    // ── Work Type (checkbox booleans) ──
+    wtSurvey:    false,
+    wtArch:      false,
+    wtMonitor:   false,
+    wtOther:     false,
+    wtOtherText: '', // Text entered when wtOther is true
+
+    // ── Personnel ──
+    yourName: '',
+    crew:     '', // Multi-line textarea
+
+    // ── Time ──
+    timeIn:     '', // 'HH:MM' 24-hour format (from <input type="time">)
+    timeOut:    '', // 'HH:MM' 24-hour format
+    lunchMins:  '', // Number of minutes for lunch break
+    totalHours: '', // Read-only, computed by calcTotalHours()
+
+    // ── Additional Personnel (multi-line textareas) ──
+    visitors:         '',
+    nativeMonitor:    '',
+    constructionCrew: '',
+
+    // ── Vehicle ──
+    vehicle:       '',
+    startLocation: '',
+    totalMiles:    '',
+
+    // ── Work Report ──
+    workReport: '', // Free text, max MAX_REPORT_CHARS characters
+
+    // ── Attachments (checkbox booleans — indicate physical documents only) ──
+    attPhoto:     false,
+    attMap:       false,
+    attSupp:      false,
+    attGps:       false,
+    attOther:     false,
+    attOtherText: '', // Text entered when attOther is true (mirrors original form)
+  };
+}
+
+
+// ── STORAGE HELPERS ───────────────────────────────────────────────────────────
+// These are the only four functions that read/write localStorage.
+// Keeping storage access centralized here makes it easy to swap in a
+// different backend later (e.g., IndexedDB for larger data, or a server API).
+
+/** Returns all saved records as an array. Empty array if none or corrupted. */
+function getAll() {
+  try   { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); }
+  catch { return []; }
+}
+
+/** Saves the complete records array to localStorage. Overwrites everything. */
+function saveAll(arr) {
+  localStorage.setItem(STORE_KEY, JSON.stringify(arr));
+}
+
+/** Returns the saved setup object. Empty object if none or corrupted. */
+function getSetup() {
+  try   { return JSON.parse(localStorage.getItem(SETUP_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+/** Saves the setup object to localStorage. */
+function saveSetupData(s) {
+  localStorage.setItem(SETUP_KEY, JSON.stringify(s));
+}
+
+
+// ── INITIALIZATION ────────────────────────────────────────────────────────────
+// DOMContentLoaded fires after the HTML is fully parsed but before images load.
+// We use it to initialize the app state before anything is visible.
+document.addEventListener('DOMContentLoaded', function () {
+  // Apply saved color scheme before rendering anything
+  const s = getSetup();
+  applyScheme(s.scheme || 'navy');
+
+  // Build the scheme selector buttons in the setup view
+  buildSchemeButtons();
+
+  // Render the dashboard with saved records
+  renderDashboard();
+});
+
+
+// ── COLOR SCHEME ──────────────────────────────────────────────────────────────
+
+/**
+ * Builds the color scheme selector buttons in the setup view.
+ * Reads from the SCHEMES constant — add entries there to add more options.
+ * Called once on DOMContentLoaded.
+ */
+function buildSchemeButtons() {
+  const grid = document.getElementById('schemeGrid');
+  if (!grid) return;
+
+  // Build a button for each scheme using Object.entries() to loop key+value pairs
+  grid.innerHTML = Object.entries(SCHEMES).map(([key, scheme]) => `
+    <button class="scheme-btn ${key === currentScheme ? 'active' : ''}"
+            data-scheme="${key}"
+            onclick="selectScheme('${key}')">
+      <div class="scheme-swatch" style="background:${scheme.primary}"></div>
+      ${scheme.label}
+    </button>
+  `).join('');
+}
+
+/**
+ * Applies a color scheme to the live UI by updating CSS custom properties
+ * on the document root element.
+ *
+ * HOW CSS CUSTOM PROPERTIES WORK:
+ * document.documentElement is the <html> element. Setting a style property
+ * here overrides the :root value in the stylesheet, and because every
+ * element using var(--scheme-primary) references this value, the change
+ * cascades instantly across the entire UI.
+ *
+ * @param {string} key — key from the SCHEMES object (e.g., 'navy', 'slate')
+ */
+function applyScheme(key) {
+  const scheme = SCHEMES[key] || SCHEMES.navy;
+  document.documentElement.style.setProperty('--scheme-primary', scheme.primary);
+  document.documentElement.style.setProperty('--scheme-text',    scheme.text);
+  currentScheme = key;
+}
+
+/**
+ * Called when user clicks a scheme button.
+ * Applies the new scheme immediately (before saving) so they see the preview.
+ */
+function selectScheme(key) {
+  applyScheme(key);
+  // Mark the clicked button active, unmark all others
+  document.querySelectorAll('.scheme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scheme === key);
+  });
+}
+
+
+// ── SETUP ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Opens the setup view and populates all fields with currently saved values.
+ */
+function openSetup() {
+  const s = getSetup();
+  document.getElementById('setupCompany').value  = s.company   || '';
+  document.getElementById('setupAddress').value  = s.address   || '';
+  document.getElementById('setupCityState').value = s.cityState || '';
+  document.getElementById('setupPhone').value    = s.phone     || '';
+  // Format the loaded phone number so previously stored raw digits display correctly
+  formatPhone(document.getElementById('setupPhone'));
+  document.getElementById('setupEmail').value    = s.email     || '';
+
+  // Show logo preview if one is saved
+  if (s.logo) {
+    document.getElementById('logoPreview').src           = s.logo;
+    document.getElementById('logoPreview').style.display = 'block';
+    document.getElementById('logoUploadHint').style.display = 'none';
+    document.getElementById('btnRemoveLogo').style.display  = 'block';
+  } else {
+    document.getElementById('logoPreview').style.display    = 'none';
+    document.getElementById('logoUploadHint').style.display = 'block';
+    document.getElementById('btnRemoveLogo').style.display  = 'none';
+  }
+
+  // Apply the saved scheme and mark the correct button active
+  applyScheme(s.scheme || 'navy');
+  document.querySelectorAll('.scheme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scheme === currentScheme);
+  });
+
+  showScreen('setup');
+}
+
+/**
+ * Closes setup and returns to the previous screen.
+ * If a record is open in the form, returns there; otherwise goes to dashboard.
+ */
+function closeSetup() {
+  currentRecord ? showScreen('formView') : showScreen('dashboard');
+}
+
+/**
+ * Reads all setup fields and saves them to localStorage, then closes setup.
+ * The logo is preserved from the existing setup (it's managed separately
+ * by handleLogoUpload and removeLogo, not by the Save button).
+ */
+function saveSetup() {
+  const existing = getSetup();
+  saveSetupData({
+    company:   document.getElementById('setupCompany').value.trim(),
+    address:   document.getElementById('setupAddress').value.trim(),
+    cityState: document.getElementById('setupCityState').value.trim(),
+    phone:     document.getElementById('setupPhone').value.trim(),
+    email:     document.getElementById('setupEmail').value.trim(),
+    scheme:    currentScheme,
+    logo:      existing.logo || null, // Preserve existing logo
+  });
+
+  applyScheme(currentScheme);
+  updateDashboardHeader();
+  showToast('Setup saved');
+  closeSetup();
+}
+
+
+// ── LOGO UPLOAD ───────────────────────────────────────────────────────────────
+
+/**
+ * Handles a logo file selection from the file picker.
+ *
+ * WHY WE RESIZE AND COMPRESS:
+ * Raw image files can be several megabytes. localStorage has a ~5MB limit
+ * shared across all keys. We resize the logo to a maximum width of 300px
+ * (maintaining aspect ratio) and compress to JPEG at 70% quality.
+ * This keeps each logo under ~50KB, leaving room for many records.
+ *
+ * CANVAS TECHNIQUE:
+ * We draw the image onto an off-screen HTML canvas at the target dimensions,
+ * then export it as a base64 data URL (a text string). This string is what
+ * gets stored in localStorage and displayed in <img> elements.
+ *
+ * @param {Event} evt — the change event from the file input
+ */
+function handleLogoUpload(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const img = new Image();
+    img.onload = function () {
+      // Calculate scaled dimensions — max 300px wide, maintain aspect ratio
+      const MAX_W = 300;
+      const scale = Math.min(1, MAX_W / img.width);
+      const w     = Math.round(img.width  * scale);
+      const h     = Math.round(img.height * scale);
+
+      // Draw to an off-screen canvas at target size
+      const canvas = document.createElement('canvas');
+      canvas.width  = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+
+      // Export — use PNG format to preserve transparency in PNG/SVG logos
+      const isPng   = file.type === 'image/png' || file.type === 'image/svg+xml';
+      const logoB64 = isPng
+        ? canvas.toDataURL('image/png')
+        : canvas.toDataURL('image/jpeg', 0.70);
+
+      // Update the preview immediately
+      const preview = document.getElementById('logoPreview');
+      preview.src           = logoB64;
+      preview.style.display = 'block';
+      document.getElementById('logoUploadHint').style.display = 'none';
+      document.getElementById('btnRemoveLogo').style.display  = 'block';
+
+      // Save logo to setup immediately — don't wait for the Save button
+      const s = getSetup();
+      s.logo = logoB64;
+      saveSetupData(s);
+
+      updateDashboardHeader();
+      showToast('Logo uploaded');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+
+  // Reset so the same file can be re-uploaded if needed
+  evt.target.value = '';
+}
+
+/**
+ * Removes the stored logo and resets the upload area.
+ * event.stopPropagation() prevents the click from bubbling to the
+ * logo-area div and accidentally re-opening the file picker.
+ */
+function removeLogo(event) {
+  event.stopPropagation();
+
+  const s = getSetup();
+  delete s.logo;
+  saveSetupData(s);
+
+  document.getElementById('logoPreview').style.display    = 'none';
+  document.getElementById('logoUploadHint').style.display = 'block';
+  document.getElementById('btnRemoveLogo').style.display  = 'none';
+
+  updateDashboardHeader();
+  showToast('Logo removed');
+}
+
+
+// ── DASHBOARD ─────────────────────────────────────────────────────────────────
+
+/**
+ * Updates the dashboard branding area with current setup values.
+ * Called on load, after saving setup, and after logo changes.
+ */
+function updateDashboardHeader() {
+  const s = getSetup();
+
+  document.getElementById('dashCompanyName').textContent =
+    s.company || 'Daily Field Work Record';
+
+  const logoEl = document.getElementById('dashLogo');
+  if (s.logo) {
+    logoEl.src           = s.logo;
+    logoEl.style.display = 'block';
+  } else {
+    logoEl.style.display = 'none';
+  }
+}
+
+/**
+ * Renders the complete dashboard: updates header, storage meter,
+ * and the list of saved records sorted by date (newest first).
+ */
+function renderDashboard() {
+  updateDashboardHeader();
+  updateStorageMeter();
+
+  const records = getAll();
+  const list    = document.getElementById('recordsList');
+
+  if (records.length === 0) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <strong>No saved records yet.</strong>
+        Tap "+ New Record" to create your first daily field work record.
+      </div>`;
+    return;
+  }
+
+  // Sort newest first by date, falling back to created timestamp
+  const sorted = [...records].sort((a, b) =>
+    ((b.date || b.created) > (a.date || a.created)) ? 1 : -1
+  );
+
+  list.innerHTML = sorted.map(r => `
+    <div class="record-card">
+      <div class="rc-name">${esc(r.yourName || 'Unnamed Record')}</div>
+      <div class="rc-meta">
+        ${esc(r.jobName || '—')}
+        ${r.jobNumber ? ' &nbsp;#' + esc(r.jobNumber) : ''}
+        &nbsp;&middot;&nbsp; ${r.date || ''}
+        &nbsp;&middot;&nbsp; Saved: ${new Date(r.updated).toLocaleString()}
+      </div>
+      <div class="rc-actions">
+        <button class="btn-card open"   onclick="openRecord('${r.id}')">Open</button>
+        <button class="btn-card"        onclick="printById('${r.id}')">Print</button>
+        <button class="btn-card del"    onclick="deleteRecord('${r.id}')">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/**
+ * Calculates and displays current localStorage usage.
+ * localStorage stores strings in UTF-16, so each character is 2 bytes.
+ * The ~5MB limit is approximate and varies by browser.
+ */
+function updateStorageMeter() {
+  let bytes = 0;
+  for (let key in localStorage) {
+    if (localStorage.hasOwnProperty(key)) {
+      bytes += (localStorage[key].length + key.length) * 2;
+    }
+  }
+  const kb  = (bytes / 1024).toFixed(1);
+  const pct = Math.min((bytes / (5 * 1024 * 1024)) * 100, 100).toFixed(1);
+
+  document.getElementById('storageText').textContent = `${kb} KB / ~5 MB`;
+  document.getElementById('storageFill').style.width = pct + '%';
+}
+
+
+// ── NAVIGATION ────────────────────────────────────────────────────────────────
+
+/**
+ * Shows one screen and hides all others.
+ * This is the entire navigation system — a simple class toggle.
+ *
+ * @param {string} id — the id of the <div class="screen"> to make active
+ */
+function showScreen(id) {
+  ['setup', 'dashboard', 'formView'].forEach(sid => {
+    document.getElementById(sid).classList.toggle('active', sid === id);
+  });
+}
+
+/**
+ * Navigates back to the dashboard from the form view.
+ * Clears currentRecord so the next "New Record" starts fresh.
+ */
+function goBack() {
+  currentRecord = null;
+  showScreen('dashboard');
+  renderDashboard();
+}
+
+
+// ── RECORD MANAGEMENT ─────────────────────────────────────────────────────────
+
+/** Creates a new blank record and opens the form for data entry. */
+function newRecord() {
+  currentRecord = blankRecord();
+  populateForm(currentRecord);
+  showScreen('formView');
+  document.getElementById('formTitle').textContent = 'New Record';
+}
+
+/**
+ * Finds a record by ID and opens it for editing.
+ * Works on a shallow copy so canceling (Back without Save) leaves original intact.
+ * @param {string} id — the record's unique id
+ */
+function openRecord(id) {
+  const rec = getAll().find(r => r.id === id);
+  if (!rec) { showToast('Record not found'); return; }
+  currentRecord = { ...rec };
+  populateForm(currentRecord);
+  showScreen('formView');
+  document.getElementById('formTitle').textContent =
+    rec.yourName || rec.jobName || 'Edit Record';
+}
+
+/**
+ * Deletes a record by ID after confirmation.
+ * @param {string} id — the record's unique id
+ */
+function deleteRecord(id) {
+  if (!confirm('Delete this record? This cannot be undone.')) return;
+  saveAll(getAll().filter(r => r.id !== id));
+  renderDashboard();
+  showToast('Record deleted');
+}
+
+/** Clears all records after double confirmation. */
+function clearAllRecords() {
+  const all = getAll();
+  if (all.length === 0) { showToast('No records to clear'); return; }
+  if (!confirm('Delete ALL ' + all.length + ' records? This cannot be undone.')) return;
+  if (!confirm('Are you sure? This permanently deletes all saved records.')) return;
+  saveAll([]);
+  renderDashboard();
+  showToast('All records cleared');
+}
+
+
+// ── FORM POPULATION ───────────────────────────────────────────────────────────
+
+/**
+ * Fills all form inputs with data from a record object.
+ * Called when opening a new or existing record.
+ * Each line sets one form element from the corresponding record field.
+ *
+ * @param {object} r — a record object (from blankRecord() or getAll())
+ */
+function populateForm(r) {
+  // Job Information
+  v('jobNumber',    r.jobNumber);
+  v('jobName',      r.jobName);
+  v('recordDate',   r.date || new Date().toISOString().slice(0, 10));
+  v('workLocation', r.workLocation);
+  v('totalPages',   r.totalPages);
+
+  // Work Type
+  chk('wtSurvey',  r.wtSurvey,  'lbSurvey');
+  chk('wtArch',    r.wtArch,    'lbArch');
+  chk('wtMonitor', r.wtMonitor, 'lbMonitor');
+  chk('wtOther',   r.wtOther,   'lbOther');
+  v('wtOtherText', r.wtOtherText);
+  document.getElementById('wtOtherText').style.display = r.wtOther ? 'inline-block' : 'none';
+
+  // Personnel
+  v('yourName', r.yourName);
+  v('crew',     r.crew);
+
+  // Time
+  v('timeIn',     r.timeIn);
+  v('timeOut',    r.timeOut);
+  v('lunchMins',  r.lunchMins);
+  v('totalHours', r.totalHours);
+
+  // Additional Personnel
+  v('visitors',         r.visitors);
+  v('nativeMonitor',    r.nativeMonitor);
+  v('constructionCrew', r.constructionCrew);
+
+  // Vehicle
+  v('vehicle',       r.vehicle);
+  v('startLocation', r.startLocation);
+  v('totalMiles',    r.totalMiles);
+
+  // Work Report
+  v('workReport', r.workReport);
+  // Resize the textarea to fit the loaded content (no scrollbar on open)
+  const wrEl = document.getElementById('workReport');
+  if (wrEl) autoResizeTextarea(wrEl);
+  updateCharCount();
+
+  // Attachments
+  chk('attPhoto', r.attPhoto, 'lcPhoto');
+  chk('attMap',   r.attMap,   'lcMap');
+  chk('attSupp',  r.attSupp,  'lcSupp');
+  chk('attGps',   r.attGps,   'lcGps');
+  chk('attOther', r.attOther, 'lcOther');
+  v('attOtherText', r.attOtherText);
+  // Show/hide the attachment Other text field based on saved state
+  document.getElementById('attOtherText').style.display = r.attOther ? 'inline-block' : 'none';
+}
+
+/**
+ * Helper: sets the value of an input or textarea by element id.
+ * The empty string fallback prevents "undefined" from appearing in inputs.
+ */
+function v(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.value = val || '';
+}
+
+/**
+ * Helper: sets a checkbox state and applies/removes the .checked style class
+ * on its parent label for visual feedback.
+ *
+ * @param {string}  cbId    — id of the checkbox element
+ * @param {boolean} val     — true to check, false to uncheck
+ * @param {string}  labelId — id of the wrapping label element
+ */
+function chk(cbId, val, labelId) {
+  const cb    = document.getElementById(cbId);
+  const label = document.getElementById(labelId);
+  if (cb)    cb.checked = !!val;
+  if (label) label.classList.toggle('checked', !!val);
+}
+
+
+// ── SAVE RECORD ───────────────────────────────────────────────────────────────
+
+/**
+ * Reads all form fields into currentRecord and saves to localStorage.
+ * If the record already exists in the array, it replaces it.
+ * If it is new, it appends it.
+ *
+ * The updated timestamp is always refreshed so export filenames
+ * and dashboard sorting reflect the most recent save.
+ */
+function saveRecord(silent = false) {
+  if (!currentRecord) return;
+
+  // Read every form field into the record object
+  currentRecord.jobNumber    = g('jobNumber');
+  currentRecord.jobName      = g('jobName');
+  currentRecord.date         = g('recordDate');
+  currentRecord.workLocation = g('workLocation');
+  currentRecord.totalPages   = g('totalPages');
+
+  currentRecord.wtSurvey    = document.getElementById('wtSurvey').checked;
+  currentRecord.wtArch      = document.getElementById('wtArch').checked;
+  currentRecord.wtMonitor   = document.getElementById('wtMonitor').checked;
+  currentRecord.wtOther     = document.getElementById('wtOther').checked;
+  currentRecord.wtOtherText = g('wtOtherText');
+
+  currentRecord.yourName = g('yourName');
+  currentRecord.crew     = g('crew');
+
+  currentRecord.timeIn     = g('timeIn');
+  currentRecord.timeOut    = g('timeOut');
+  currentRecord.lunchMins  = g('lunchMins');
+  currentRecord.totalHours = g('totalHours');
+
+  currentRecord.visitors         = g('visitors');
+  currentRecord.nativeMonitor    = g('nativeMonitor');
+  currentRecord.constructionCrew = g('constructionCrew');
+
+  currentRecord.vehicle       = g('vehicle');
+  currentRecord.startLocation = g('startLocation');
+  currentRecord.totalMiles    = g('totalMiles');
+
+  currentRecord.workReport = g('workReport');
+
+  currentRecord.attPhoto = document.getElementById('attPhoto').checked;
+  currentRecord.attMap   = document.getElementById('attMap').checked;
+  currentRecord.attSupp  = document.getElementById('attSupp').checked;
+  currentRecord.attGps   = document.getElementById('attGps').checked;
+  currentRecord.attOther     = document.getElementById('attOther').checked;
+  currentRecord.attOtherText = g('attOtherText');
+
+  currentRecord.updated = new Date().toISOString();
+
+  // Merge: replace existing record with same ID, or append if new
+  const all = getAll();
+  const idx = all.findIndex(r => r.id === currentRecord.id);
+  if (idx >= 0) {
+    all[idx] = currentRecord;
+  } else {
+    all.push(currentRecord);
+  }
+  saveAll(all);
+
+  // Update the form title with the person's name
+  document.getElementById('formTitle').textContent =
+    currentRecord.yourName || currentRecord.jobName || 'Saved';
+
+  updateStorageMeter();
+  if (!silent) showToast('Saved');
+}
+
+/** Helper: gets the trimmed value of an input by id. */
+function g(id) {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : '';
+}
+
+/**
+ * Saves the current record and returns to the dashboard.
+ * Used by the bottom 'Save Record' button.
+ *
+ * WHY A DELAY:
+ * showToast() displays a brief confirmation message. If we called
+ * goBack() immediately, the view would change before the user sees it.
+ * A 700ms delay lets the toast appear, then navigates away.
+ *
+ * NOTE: The header Save button still calls saveRecord() directly
+ * so users can save mid-entry without losing their place in the form.
+ */
+function saveAndReturn() {
+  saveRecord();                        // Save all current form data
+  setTimeout(() => goBack(), 700);     // Brief pause so toast is visible
+}
+
+// ── TIME CALCULATION ──────────────────────────────────────────────────────────
+
+/**
+ * Automatically calculates Total Hours from Time In, Time Out, and Lunch.
+ * Called by the onchange handlers on all three time inputs.
+ *
+ * HOW IT WORKS:
+ * <input type="time"> always returns time in 24-hour HH:MM format internally,
+ * regardless of how it displays. This makes the arithmetic straightforward:
+ *
+ * 1. Parse "HH:MM" strings into integers (hours and minutes)
+ * 2. Convert both times to total minutes since midnight
+ * 3. If Time Out <= Time In, add 24*60 to handle overnight shifts
+ * 4. Subtract Time In and Lunch from Time Out
+ * 5. Divide remaining minutes by 60 for decimal hours
+ *
+ * EXAMPLE: Time In 08:00, Time Out 16:30, Lunch 30 min
+ *   inMins  = 8*60 + 0  = 480
+ *   outMins = 16*60 + 30 = 990
+ *   total   = (990 - 480 - 30) / 60 = 8.00 hours
+ */
+function calcTotalHours() {
+  const timeIn  = document.getElementById('timeIn').value;
+  const timeOut = document.getElementById('timeOut').value;
+  const lunch   = parseFloat(document.getElementById('lunchMins').value) || 0;
+  const outEl   = document.getElementById('totalHours');
+
+  // Cannot calculate if either time is missing
+  if (!timeIn || !timeOut) { outEl.value = ''; return; }
+
+  // Parse HH:MM into integer hours and minutes
+  const [inH,  inM]  = timeIn.split(':').map(Number);
+  const [outH, outM] = timeOut.split(':').map(Number);
+
+  let inMins  = inH  * 60 + inM;
+  let outMins = outH * 60 + outM;
+
+  // Handle overnight: if out time is before (or equal to) in time, it's next day
+  if (outMins <= inMins) outMins += 24 * 60;
+
+  const worked = outMins - inMins - lunch;
+
+  outEl.value = worked > 0 ? (worked / 60).toFixed(2) : '0.00';
+}
+
+
+// ── FORM HELPERS ──────────────────────────────────────────────────────────────
+
+/**
+ * Toggles the .checked CSS class on a chip or attach label.
+ * The .checked class applies the visual "selected" state (border + background).
+ * Called by onchange handlers on checkbox inputs.
+ *
+ * @param {string}           labelId — id of the wrapping label element
+ * @param {HTMLInputElement} cb      — the checkbox element
+ */
+function updateChipStyle(labelId, cb) {
+  document.getElementById(labelId).classList.toggle('checked', cb.checked);
+}
+
+/**
+ * Shows or hides the "Other" text input in the Work Type section.
+ * Called specifically by the wtOther checkbox's onchange handler.
+ */
+function toggleWtOther(cb) {
+  const input = document.getElementById('wtOtherText');
+  input.style.display = cb.checked ? 'inline-block' : 'none';
+  if (!cb.checked) input.value = '';
+}
+
+/**
+ * Shows or hides the "Other" text input in the Attachments section.
+ * Mirrors the blank line after "Other" on the original paper form.
+ * Called by the attOther checkbox's onchange handler.
+ */
+function toggleAttOther(cb) {
+  const input = document.getElementById('attOtherText');
+  input.style.display = cb.checked ? 'inline-block' : 'none';
+  if (!cb.checked) input.value = '';
+}
+
+/**
+ * Updates the live character counter below the Work Report textarea.
+ * Shows a warning style at 90% full and an error style at the limit.
+ */
+/**
+ * Auto-expands the Work Report textarea as the user types.
+ * Called on every input event on the textarea.
+ *
+ * TECHNIQUE:
+ * 1. Set height to "auto" — this collapses the box so the browser
+ *    can recalculate scrollHeight (the true content height).
+ * 2. Set height to scrollHeight — the box grows to fit its content.
+ * 3. CSS max-height on #workReport caps growth at 340px, at which
+ *    point overflow-y:auto shows a scrollbar. This happens near
+ *    the character limit, so the user rarely sees the scrollbar.
+ *
+ * Also called in populateForm() so existing text displays at full
+ * height when opening a saved record.
+ *
+ * @param {HTMLTextAreaElement} el — the textarea element
+ */
+function autoResizeTextarea(el) {
+  el.style.height = "auto";           // Reset to get accurate scrollHeight
+  el.style.height = el.scrollHeight + "px"; // Expand to content height
+}
+
+function updateCharCount() {
+  const len     = document.getElementById('workReport').value.length;
+  const counter = document.getElementById('charCounter');
+  counter.textContent = len + ' / ' + MAX_REPORT_CHARS;
+  counter.className   = 'char-counter'
+    + (len >= MAX_REPORT_CHARS     ? ' over' : '')
+    + (len >= MAX_REPORT_CHARS * 0.9 && len < MAX_REPORT_CHARS ? ' warn' : '');
+}
+
+/**
+ * Formats a phone number input to (XXX) XXX-XXXX on blur.
+ * Only formats if the stripped digit count is exactly 10.
+ * Non-US numbers, extensions, and already-formatted numbers are left as-is.
+ *
+ * Examples:
+ *   "5627531234"     → "(562) 753-1234"
+ *   "(562) 753-1234" → "(562) 753-1234"  (already formatted, no change)
+ *   "+15627531234"   → left as-is (11 digits)
+ *   "562-753-1234"   → "(562) 753-1234"  (digits stripped then reformatted)
+ *
+ * @param {HTMLInputElement} input — the phone input element
+ */
+function formatPhone(input) {
+  const digits = input.value.replace(/\D/g, ''); // Strip all non-digit characters
+  if (digits.length === 10) {
+    // Standard US format: (XXX) XXX-XXXX
+    input.value = '(' + digits.slice(0,3) + ') ' + digits.slice(3,6) + '-' + digits.slice(6);
+  }
+  // Non-10-digit strings (international, extensions) are left unchanged
+}
+
+/**
+ * Escapes HTML special characters to prevent XSS when inserting user data
+ * into innerHTML. Always use this function — never interpolate user data
+ * directly into HTML strings.
+ *
+ * @param {*} str — any value; will be converted to string
+ * @returns {string} HTML-safe string
+ */
+function esc(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+
+// ── PRINT / PDF ───────────────────────────────────────────────────────────────
+
+/**
+ * Saves the current record, fills the print layout, and opens the print dialog.
+ * The browser converts to PDF if the user selects "Save as PDF" in the dialog.
+ */
+function printRecord() {
+  saveRecord(true);
+  if (currentRecord) {
+    populatePrintView(currentRecord);
+    window.print();
+  }
+}
+
+/**
+ * Prints a specific record by ID without opening the form for editing.
+ * Used by the Print button on dashboard record cards.
+ *
+ * @param {string} id — record id to print
+ */
+function printById(id) {
+  const rec = getAll().find(r => r.id === id);
+  if (!rec) { showToast('Record not found'); return; }
+  currentRecord = rec;
+  populateForm(rec);
+  populatePrintView(rec);
+  showScreen('formView');
+  window.print();
+}
+
+/**
+ * Injects record data and company setup into the print-only HTML elements.
+ * These elements are hidden in the browser view but revealed by @media print.
+ *
+ * This function is the bridge between the JavaScript data model and the
+ * print layout. If you add a new field to blankRecord(), add it here too.
+ *
+ * @param {object} r — the record object to print
+ */
+function populatePrintView(r) {
+  const s = getSetup();
+
+  // ── Print Header ──
+  const printLogo = document.getElementById('printLogo');
+  if (s.logo) {
+    printLogo.src           = s.logo;
+    printLogo.style.display = 'block';
+  } else {
+    printLogo.style.display = 'none';
+  }
+
+  // ── Print Footer ──
+  document.getElementById('pfAddress').textContent =
+    [s.address, s.cityState].filter(Boolean).join(', ');
+  document.getElementById('pfPhone').textContent = s.phone || '';
+  document.getElementById('pfEmail').textContent = s.email || '';
+
+  // ── Print Fields ──
+  // Helper to set a print field value by element id
+  const pv = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val || '';
+  };
+
+  // Populate the 'Page 1 of ___' field in the print header
+  const totalPagesEl = document.getElementById('prTotalPages');
+  if (totalPagesEl) totalPagesEl.textContent = r.totalPages || '___';
+
+  pv('prJobNumber',      r.jobNumber);
+  pv('prJobName',        r.jobName);
+  pv('prDate',           r.date);
+  pv('prWorkLocation',   r.workLocation);
+  pv('prYourName',       r.yourName);
+  pv('prCrew',           r.crew);
+  pv('prTimeIn',         formatTime(r.timeIn));
+  pv('prTimeOut',        formatTime(r.timeOut));
+  pv('prLunch',          r.lunchMins ? r.lunchMins + ' min' : '');
+  pv('prTotalHours',     r.totalHours ? r.totalHours + ' hrs' : '');
+  pv('prVisitors',       r.visitors);
+  pv('prNativeMonitor',  r.nativeMonitor);
+  pv('prConstructionCrew', r.constructionCrew);
+  pv('prVehicle',        r.vehicle);
+  pv('prStartLocation',  r.startLocation);
+  pv('prTotalMiles',     r.totalMiles);
+  pv('prWorkReport',     r.workReport);
+
+  // ── Work Type checkboxes ──
+  // Build each checkbox as a small box with an X when checked
+  const wtEl = document.getElementById('prWorkType');
+  const types = [
+    { label: 'Survey',                    val: r.wtSurvey  },
+    { label: 'Archaeological Excavation', val: r.wtArch    },
+    { label: 'Monitoring',                val: r.wtMonitor },
+    { label: r.wtOtherText || 'Other',    val: r.wtOther   },
+  ];
+  wtEl.innerHTML = '<span class="print-attach-label">Work Type:</span>' +
+    types.map(t => `
+      <span class="print-wt-item">
+        <span class="print-wt-box">${t.val ? 'X' : ''}</span>
+        ${esc(t.label)}
+      </span>
+    `).join('');
+
+  // ── Attachment checkboxes ──
+  // Now targets the fixed-position printAttachRow div (outside printContent)
+  const attEl = document.getElementById('printAttachRow');
+  const atts = [
+    { label: 'Photo Log',           val: r.attPhoto },
+    { label: 'Map',                 val: r.attMap   },
+    { label: 'Supplementary Sheets', val: r.attSupp },
+    { label: 'GPS Log',             val: r.attGps   },
+    // Show attOtherText as the label when Other is checked and text exists
+    { label: r.attOtherText ? 'Other: ' + r.attOtherText : 'Other', val: r.attOther },
+  ];
+  attEl.innerHTML = '<span class="print-attach-label">Attachments:</span>' +
+    atts.map(a => `
+      <span class="print-wt-item">
+        <span class="print-wt-box">${a.val ? 'X' : ''}</span>
+        ${esc(a.label)}
+      </span>
+    `).join('');
+}
+
+/**
+ * Formats a 24-hour HH:MM string to 12-hour AM/PM for readable print output.
+ * '08:00' → '8:00 AM', '13:30' → '1:30 PM'
+ *
+ * @param {string} t — time string in HH:MM format
+ * @returns {string} formatted time or empty string if input is blank
+ */
+function formatTime(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const hour   = h % 12 || 12;
+  return `${hour}:${String(m).padStart(2, '0')} ${suffix}`;
+}
+
+
+// ── EXPORT / IMPORT ───────────────────────────────────────────────────────────
+
+/**
+ * Exports all records to a single JSON backup file.
+ *
+ * FILENAME FORMAT:
+ *   dfwr-[JobName]_backup-YYYY-MM-DD-HHMM.json
+ *
+ * The job name portion is determined by:
+ *   - One unique job name across all records → use that name
+ *   - One unique job number (if no single name) → use that number
+ *   - Multiple different jobs → 'multi'
+ *   - No records → no project reference
+ *
+ * The time (HHMM) is appended so multiple exports on the same day
+ * produce unique filenames and don't overwrite each other.
+ */
+function exportBackup() {
+  const all  = getAll();
+  const data = JSON.stringify(all, null, 2);
+
+  // Determine filename project reference
+  const names   = [...new Set(all.map(r => r.jobName).filter(Boolean))];
+  const numbers = [...new Set(all.map(r => r.jobNumber).filter(Boolean))];
+  let ref = names.length === 1   ? names[0]
+          : numbers.length === 1 ? numbers[0]
+          : all.length > 0       ? 'multi'
+          : '';
+  const safeRef = ref
+    ? '-' + ref.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 30)
+    : '';
+
+  const now  = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toTimeString().slice(0, 5).replace(':', '');
+
+  const a = document.createElement('a');
+  a.href     = 'data:application/json;charset=utf-8,' + encodeURIComponent(data);
+  a.download = 'dfwr' + safeRef + '_backup-' + date + '-' + time + '.json';
+  a.click();
+}
+
+/**
+ * Imports records from one or more JSON backup files.
+ * Supports multi-file selection via the 'multiple' attribute on the input.
+ *
+ * MERGE STRATEGY:
+ * Each record has a unique 'id'. If the same id appears in multiple files,
+ * the version with the most recent 'updated' timestamp is kept.
+ * This handles the case where a record was edited on two different devices
+ * and both exports are being merged into one file.
+ *
+ * After merging, the dashboard is refreshed to show the combined result.
+ *
+ * @param {Event} evt — the change event from the file input
+ */
+function importBackup(evt) {
+  const files = Array.from(evt.target.files);
+  if (!files.length) return;
+
+  // Read all files in parallel using Promises.
+  // Each file resolves to an array of records, or rejects with the filename.
+  const readers = files.map(file => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const arr = JSON.parse(e.target.result);
+        if (!Array.isArray(arr)) throw new Error();
+        resolve(arr);
+      } catch {
+        reject(file.name); // Pass filename so we can report which file failed
+      }
+    };
+    reader.readAsText(file);
+  }));
+
+  // Promise.allSettled waits for ALL files regardless of individual failures.
+  // This is better than Promise.all which would abort on the first failure.
+  Promise.allSettled(readers).then(results => {
+    const failed   = results.filter(r => r.status === 'rejected').map(r => r.reason);
+    const incoming = results.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
+
+    if (!incoming.length) {
+      showToast('No valid records found.');
+      return;
+    }
+
+    // Merge: existing records + incoming, deduplicated by id
+    const existing = getAll();
+    const merged   = new Map();
+
+    [...existing, ...incoming].forEach(rec => {
+      const prev = merged.get(rec.id);
+      // Keep the most recently updated version of any duplicate
+      if (!prev || (rec.updated || '') >= (prev.updated || '')) {
+        merged.set(rec.id, rec);
+      }
+    });
+
+    const final = Array.from(merged.values());
+    saveAll(final);
+    renderDashboard();
+
+    // Build a descriptive toast message
+    const added = final.length - existing.length;
+    let msg = 'Imported ' + incoming.length + ' record' + (incoming.length !== 1 ? 's' : '');
+    if (files.length > 1) msg += ' from ' + files.length + ' files';
+    if (added > 0)        msg += ' (' + added + ' new)';
+    if (failed.length)    msg += '. Could not read: ' + failed.join(', ');
+    showToast(msg);
+  });
+
+  evt.target.value = ''; // Reset input so the same file can be re-selected
+}
+
+
+// ── TOAST ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Shows a brief notification at the bottom of the screen.
+ * The toast fades in, stays for 2.5 seconds, then fades out.
+ * Safe to call multiple times — previous toasts are overwritten.
+ *
+ * @param {string} msg — the message to display
+ */
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2500);
+}
+</script>
+</body>
+</html>
