@@ -183,6 +183,9 @@ function buildDocDefinition(record, setup) {
     });
   }
 
+  // v2.4.0.1 (visual polish): a thin divider immediately above ATTACHMENTS,
+  // to separate the Work Report / continuation content from the checklist.
+  content.push({ canvas: [{ type: 'line', x1: 0, y1: 0, x2: 531, y2: 0, lineWidth: 0.5, lineColor: RULE }], margin: [0, 10, 0, 0] });
   content.push(attachRow);
 
   // ---- Repeating company footer band (drawn on EVERY page) ---------------
@@ -205,13 +208,22 @@ function buildDocDefinition(record, setup) {
   }
 
   // ---- Compact running header on pages 2+ (page 1 has the full header) ----
+  // v2.4.0.1 (visual polish): a thin divider is drawn immediately below the
+  // running header to separate the repeated header from the continued body.
+  // This lives entirely inside the top page margin (drawn by pdfmake's header
+  // mechanism), so it does NOT affect body pagination or flow.
   function header(currentPage) {
     if (currentPage === 1) return null;
     return {
-      margin: [40, 24, 40, 0],
-      columns: [
-        { text: 'Daily Field Work Record', style: 'docTitleSmall' },
-        { text: (r.jobName ? r.jobName : '') + (r.jobNumber ? '  |  #' + r.jobNumber : ''), alignment: 'right', fontSize: 8, color: LABEL, margin: [0, 3, 0, 0] }
+      margin: [40, 20, 40, 0],
+      stack: [
+        {
+          columns: [
+            { text: 'Daily Field Work Record', style: 'docTitleSmall' },
+            { text: (r.jobName ? r.jobName : '') + (r.jobNumber ? '  |  #' + r.jobNumber : ''), alignment: 'right', fontSize: 8, color: LABEL, margin: [0, 3, 0, 0] }
+          ]
+        },
+        { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 531, y2: 0, lineWidth: 0.5, lineColor: RULE }], margin: [0, 3, 0, 0] }
       ]
     };
   }
