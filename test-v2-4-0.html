@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,6 +14,20 @@
 
   <!--
   ============================================================
+  DAILY FIELD WORK RECORD — v2.4.0 RC2  (Phase A: visual polish)
+  Labor Compliance Solutions
+  ------------------------------------------------------------
+  WHAT CHANGED IN v2.4.0 RC2 (VISUAL ONLY — no logic changes):
+    - Thin divider below the running page header on continuation pages
+      (drawn inside the top page margin; does not affect pagination).
+    - Thin divider immediately above the ATTACHMENTS section.
+    - Button labels: "Generate PDF" -> "PDF"; "Print (desktop)" ->
+      "Print (Desktop)" (form header and dashboard cards).
+    - Brief guidance text beneath the buttons (form view and dashboard).
+    NOT touched: pdfmake generation, pagination, page numbering, footer
+    repetition, continuation flow, Work Report layout, data model,
+    JSON import/export, localStorage, calculations.
+  ------------------------------------------------------------
   DAILY FIELD WORK RECORD — v2.4.0  (Phase A: Generate PDF)
   Labor Compliance Solutions
   ------------------------------------------------------------
@@ -314,6 +327,23 @@
       white-space: nowrap;
     }
     .btn-header:hover { background: rgba(255, 255, 255, 0.15); }
+
+    /* Guidance text beneath the output buttons (v2.4.0 RC2, visual only). */
+    .output-helper {
+      max-width: var(--max-w);
+      margin: 10px auto 0;
+      padding: 10px 14px;
+      background: var(--snow);
+      border: 1px solid var(--frost);
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--slate);
+    }
+    .output-helper strong { color: var(--dark); }
+    .dash-output-helper {
+      margin: 0 0 14px;
+    }
 
     /* ===========================================================
        DASHBOARD VIEW
@@ -1579,6 +1609,11 @@
 
     <!-- Records list — rendered by renderDashboard() -->
     <div class="list-label">Saved Records</div>
+    <!-- v2.4.0 RC2 (visual polish): output guidance for the per-record buttons. -->
+    <div class="output-helper dash-output-helper">
+      <div><strong>PDF:</strong> Recommended for tablets and for saving or sharing PDF reports.</div>
+      <div><strong>Print (Desktop):</strong> Use when printing directly from a desktop computer.</div>
+    </div>
     <div id="recordsList"></div>
 
   </div>
@@ -1603,9 +1638,16 @@
       <!-- v2.4.0 (Phase A): Generate PDF is the new pdfmake output path.
            "Print (desktop)" is the existing browser-print path, kept as a
            temporary fallback during Phase A. Nothing was removed. -->
-      <button class="btn-header" onclick="generatePdfCurrent()">Generate PDF</button>
-      <button class="btn-header" onclick="printRecord()">Print (desktop)</button>
+      <button class="btn-header" onclick="generatePdfCurrent()">PDF</button>
+      <button class="btn-header" onclick="printRecord()">Print (Desktop)</button>
     </div>
+  </div>
+  <!-- v2.4.0 RC2 (visual polish): brief guidance beneath the header buttons,
+       steering users toward the PDF workflow without removing the desktop
+       print fallback during Phase A. -->
+  <div class="output-helper no-print">
+    <div><strong>PDF:</strong> Recommended for tablets and for saving or sharing PDF reports.</div>
+    <div><strong>Print (Desktop):</strong> Use when printing directly from a desktop computer.</div>
   </div>
 
   <!-- ── PRINT HEADER (hidden in browser, shown on print) ──────────
@@ -2609,8 +2651,8 @@ function renderDashboard() {
       </div>
       <div class="rc-actions">
         <button class="btn-card open"   onclick="openRecord('${r.id}')">Open</button>
-        <button class="btn-card"        onclick="generatePdfById('${r.id}')">Generate PDF</button>
-        <button class="btn-card"        onclick="printById('${r.id}')">Print (desktop)</button>
+        <button class="btn-card"        onclick="generatePdfById('${r.id}')">PDF</button>
+        <button class="btn-card"        onclick="printById('${r.id}')">Print (Desktop)</button>
         <button class="btn-card del"    onclick="deleteRecord('${r.id}')">Delete</button>
       </div>
     </div>
