@@ -1,29 +1,21 @@
 /* ============================================================================
- * DFWR — pdfmake document definition builder  (Proof of Concept)
- * ----------------------------------------------------------------------------
+ * DAILY FIELD WORK RECORD — PDF DOCUMENT BUILDER
+ * Version: 2.5.0 Production
+ *
  * PURPOSE
- * This is the single place that turns a saved DFWR record (the same object
- * shape the existing tool exports) plus the company setup into a pdfmake
- * "document definition". pdfmake then lays it out and paginates it itself.
+ * Converts a saved DFWR record and company setup into a pdfmake document
+ * definition. pdfmake owns page layout, pagination, running headers, page
+ * numbering, and the repeating company footer on desktop and tablet devices.
  *
- * WHY THIS REPLACES THE BROWSER-PRINT PIPELINE
- * - No browser print engine, so Safari cannot inject its URL/date/page footer.
- * - pdfmake auto-paginates: a long Work Report simply flows onto as many
- *   pages as needed. No character budgets, no manual continuation sheets.
- * - The company footer is a repeating band drawn on EVERY page by pdfmake,
- *   so it can never "orphan" onto a blank page.
- * => Compact Print Mode, shrink-block2, print-hide, splitTextByBudget and the
- *    whole v2.3.1–v2.3.6 workaround stack become unnecessary.
+ * PRODUCTION ARCHITECTURE
+ * - Single report-output path: generated PDF.
+ * - No browser-print layout or device-specific print calibration.
+ * - User-entered continuation content is preserved in saved order.
+ * - Generated report pages use automatic Page X of Y numbering.
+ * - External supporting pages are reported separately.
  *
- * DESIGN NOTE (ruled-look question, for review)
- * The paper form uses ruled writing lines. Here the fields are rendered as a
- * clean bordered table instead — far simpler to maintain and it reads as a
- * professional form. Literal ruled lines are possible via pdfmake canvas if
- * you decide you want them; this POC shows the table version for you to judge.
- *
- * This file is plain JS with no imports so the exact same function can be
- * pasted into the browser page. (module.exports at the bottom is ignored in
- * the browser and only used by the Node test harness.)
+ * DEVELOPMENT
+ * Application owner and primary developer: Robert Villa
  * ========================================================================== */
 
 function buildDocDefinition(record, setup) {
@@ -91,10 +83,15 @@ function buildDocDefinition(record, setup) {
 
   // ---- Header block (page 1 body, not a running header) ------------------
   var titleColumns = [];
+  var companyName = val(s.company).trim();
   if (s.logo) {
-    titleColumns.push({ image: s.logo, fit: [120, 40], width: 130 });
+    var brandStack = [{ image: s.logo, fit: [120, 31], alignment: 'left' }];
+    if (companyName) {
+      brandStack.push({ text: companyName, style: 'companyName', margin: [0, 2, 0, 0] });
+    }
+    titleColumns.push({ stack: brandStack, width: 130 });
   } else {
-    titleColumns.push({ text: '', width: 130 });
+    titleColumns.push({ text: companyName || ' ', style: 'companyName', width: 130, margin: [0, 9, 0, 0] });
   }
   titleColumns.push({ text: 'Daily Field Work Record', style: 'docTitle', alignment: 'center' });
   titleColumns.push({ text: '', width: 130 });
@@ -188,9 +185,23 @@ function buildDocDefinition(record, setup) {
   content.push({ canvas: [{ type: 'line', x1: 0, y1: 0, x2: 531, y2: 0, lineWidth: 0.5, lineColor: RULE }], margin: [0, 10, 0, 0] });
   content.push(attachRow);
 
+  // v2.4.1: number of EXTERNAL supporting pages submitted with this report,
+  // shown near the Attachments section. This is SEPARATE from pdfmake's
+  // automatic "Page X of Y" (which counts the generated report's own pages);
+  // the two are intentionally NOT combined. Blank -> 0.
+  var extraPages = parseInt(r.additionalAttachedPages, 10);
+  if (isNaN(extraPages) || extraPages < 0) extraPages = 0;
+  content.push({
+    text: [
+      { text: 'Additional Attached Pages: ', style: 'inlineLabel' },
+      { text: String(extraPages), fontSize: 9 }
+    ],
+    margin: [0, 6, 0, 0]
+  });
+
   // ---- Repeating company footer band (drawn on EVERY page) ---------------
   var footerText = [s.address, s.cityState].filter(Boolean).join(', ');
-  var footerContacts = [footerText, s.phone, s.email].filter(Boolean).join('     ');
+  var footerContacts = [s.company, footerText, s.phone, s.email].filter(Boolean).join('     ');
 
   function footer(currentPage, pageCount) {
     return {
@@ -233,10 +244,16 @@ function buildDocDefinition(record, setup) {
     pageSize: 'LETTER',
     pageMargins: [40, 44, 40, 64],   // top margin leaves room for pages-2+ header; bottom for footer
     info: {
-      title: buildFilename(r)        // suggested Save-as name (no title-swap hack)
+      title: buildFilename(r),
+      author: s.company || r.yourName || 'Daily Field Work Record',
+      subject: 'Daily Field Work Record' + (r.jobName ? ' — ' + r.jobName : ''),
+      keywords: 'Daily Field Work Record, field report' + (r.jobNumber ? ', ' + r.jobNumber : ''),
+      creator: 'Daily Field Work Record Web Application',
+      producer: 'pdfmake 0.2.23'
     },
     defaultStyle: { font: 'Roboto', fontSize: 10, color: TEXT, lineHeight: 1.15 },
     styles: {
+      companyName:   { fontSize: 7.5, bold: true, color: PRIMARY, alignment: 'left' },
       docTitle:      { fontSize: 16, bold: true, color: PRIMARY, margin: [0, 4, 0, 0] },
       docTitleSmall: { fontSize: 10, bold: true, color: PRIMARY },
       fieldLabel:    { fontSize: 7.5, bold: true, color: LABEL, characterSpacing: 0.3 },
