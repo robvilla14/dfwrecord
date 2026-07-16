@@ -1,0 +1,2717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Tab title is intentionally version-free so it reads like a normal app.
+       The version lives in the filename and the header comment below. -->
+  <title>Daily Field Work Record</title>
+
+  <!--
+  ============================================================
+  DAILY FIELD WORK RECORD — v2.5.0  (Production: single PDF output)
+  Labor Compliance Solutions
+  ------------------------------------------------------------
+  OUTPUT ARCHITECTURE
+  The report is generated as a PDF with pdfmake (vendored locally in
+  pdfmake.min.js + vfs_fonts.js; layout in build-doc.js). This is the ONLY
+  report-output path — desktop and tablet users get the identical PDF. There
+  is no browser printing: Safari can't inject headers/footers, long Work
+  Reports auto-paginate, "Page X of Y" is automatic, and the company footer
+  repeats on every page.
+
+  WHAT WAS REMOVED IN v2.5.0 (browser-print cleanup):
+    window.print() actions; the HTML print-only report layout; manual
+    "Page 1 of X" handling; the blank-pages reminder; Compact Print Mode
+    (Setup card, compactPrint persistence, applyCompactPrint, the --compact-*
+    variables and @media print overrides); Safari character budgets and
+    splitTextByBudget; the shrink-block2 / print-hide workarounds; and the
+    document.title print-filename workaround. Data-entry continuationPages
+    support is PRESERVED — user continuation content is rendered in the PDF.
+
+  FIELD CHANGE:
+    "Total Pages" was removed. A new "Additional Attached Pages" field
+    (stored as `additionalAttachedPages`, beneath the attachment checkboxes)
+    records external supporting pages; it prints near the Attachments section
+    as "Additional Attached Pages: X" (0 when blank). Older records carrying
+    the legacy `totalPages` value import without error; that value is ignored
+    and never copied into the new field (different meaning).
+
+  ------------------------------------------------------------
+  THREE VIEWS: Setup, Dashboard, Form (one visible at a time via the
+  'active' class). DATA STORAGE: localStorage keys dfwr_setup and
+  dfwr_records. Clearing browser data erases records — export backups.
+  COLOR THEMING: the scheme sets CSS custom properties (--scheme-primary,
+  --scheme-text) on :root.
+  ============================================================
+  -->
+
+
+  <style>
+    /* ===========================================================
+       CSS CUSTOM PROPERTIES (DESIGN TOKENS)
+       -----------------------------------------------------------
+       All colors, fonts, and spacing values are defined here as
+       CSS variables (custom properties). Changing a value in
+       :root updates every element that uses it automatically.
+
+       SNOW SOLITUDE PALETTE — matches the rest of the toolkit:
+         --dark   #4A5D6D  headers, primary text
+         --mid    #607890  secondary text, borders
+         --steel  #8A9BB0  muted labels, hints
+         --frost  #C0CEDC  borders, dividers
+         --snow   #E4EAF2  subtle backgrounds
+
+       SCHEME VARIABLES — overridden at runtime by applyScheme():
+         --scheme-primary  the company's brand color
+         --scheme-text     text color on top of the brand color
+    =========================================================== */
+    :root {
+      /* Snow Solitude base palette */
+      --dark:   #4A5D6D;
+      --mid:    #607890;
+      --steel:  #8A9BB0;
+      --frost:  #C0CEDC;
+      --snow:   #E4EAF2;
+
+      /* Scheme colors — set by applyScheme() on load and on selection.
+         Default is MB Navy, based on the original form color. */
+      --scheme-primary: #1B2A47;
+      --scheme-text:    #FFFFFF;
+
+      /* Status colors */
+      --pass:  #28a745;
+      --fail:  #dc3545;
+      --warn:  #ffc107;
+
+      /* Typography */
+      --font:  'Segoe UI', Arial, sans-serif;
+
+      /* Layout helpers */
+      --radius: 12px;
+      --shadow: 0 2px 8px rgba(74, 93, 109, 0.10);
+      --max-w:  860px;
+    }
+
+    /* ===========================================================
+       RESET & BASE
+    =========================================================== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font);
+      background: #F0F3F6;
+      color: var(--dark);
+      min-height: 100vh;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    /* ===========================================================
+       SCREEN SYSTEM
+       -----------------------------------------------------------
+       All three views (setup, dashboard, formView) exist in the
+       DOM at all times. Only the div with class 'active' shows.
+       showScreen() manages which one is visible.
+    =========================================================== */
+    .screen         { display: none; min-height: 100vh; }
+    .screen.active  { display: block; }
+
+    /* ===========================================================
+       SHARED VIEW HEADER
+       -----------------------------------------------------------
+       Used in the form view and setup view. The .view-header-inner
+       container constrains controls to --max-w so they align with
+       the content below on wide desktop screens.
+       position: sticky keeps the header pinned while scrolling.
+    =========================================================== */
+    .view-header {
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      padding: 0 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      border-bottom: 3px solid rgba(255, 255, 255, 0.2);
+    }
+    .view-header-inner {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 0;
+    }
+    .view-title {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Pill buttons used in the view headers */
+    .btn-header {
+      background: none;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      color: var(--scheme-text);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    .btn-header:hover { background: rgba(255, 255, 255, 0.15); }
+
+    /* Guidance text beneath the output buttons (v2.4.0.1, visual only). */
+    .output-helper {
+      max-width: var(--max-w);
+      margin: 10px auto 0;
+      padding: 10px 14px;
+      background: var(--snow);
+      border: 1px solid var(--frost);
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--mid);
+    }
+    .output-helper strong { color: var(--dark); }
+    .dash-output-helper {
+      margin: 0 0 14px;
+    }
+
+    /* ===========================================================
+       DASHBOARD VIEW
+       -----------------------------------------------------------
+       The home screen. Shows company branding at the top, then
+       action buttons, then the list of saved records.
+    =========================================================== */
+    #dashboard { background: #F0F3F6; }
+
+    /* Dashboard branding header */
+    .dash-header {
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      padding: 20px 16px 0;
+    }
+    .dash-header-inner {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      padding-bottom: 16px;
+    }
+    .dash-logo-area { flex: 1; min-width: 0; }
+
+    /* Company logo in the dashboard header.
+       display:none until a logo is loaded by updateDashboardHeader(). */
+    .dash-logo-img {
+      max-height: 50px;
+      max-width: 200px;
+      object-fit: contain;
+      display: none;
+      margin-bottom: 8px;
+    }
+    .dash-company-name {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+    .dash-tool-name {
+      font-size: 11px;
+      opacity: 0.70;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+    .dash-setup-btn {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.30);
+      color: var(--scheme-text);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: background 0.2s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .dash-setup-btn:hover { background: rgba(255, 255, 255, 0.22); }
+
+    /* localStorage usage bar — shows how full the storage is.
+       Sits between the header and the body content. */
+    .storage-wrap {
+      background: var(--scheme-primary);
+      padding: 0 16px 10px;
+      border-bottom: 3px solid rgba(255, 255, 255, 0.15);
+    }
+    .storage-inner { max-width: var(--max-w); margin: 0 auto; }
+    .storage-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.60);
+      margin-bottom: 4px;
+    }
+    .storage-track {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.20);
+      border-radius: 2px;
+    }
+    .storage-fill {
+      height: 100%;
+      background: rgba(255, 255, 255, 0.65);
+      border-radius: 2px;
+      transition: width 0.4s;
+    }
+
+    /* Dashboard content area */
+    .dash-body {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* Action button grids */
+    .btn-grid-1 { margin-bottom: 10px; }
+    .btn-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    /* Primary action button (e.g., New Record) */
+    .btn-primary {
+      width: 100%;
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      border: none;
+      border-radius: 10px;
+      padding: 15px 10px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.2s;
+      margin-bottom: 10px;
+    }
+    .btn-primary:hover { opacity: 0.85; }
+
+    /* Secondary action buttons (Export, Import, Clear) */
+    .btn-secondary {
+      background: white;
+      color: var(--dark);
+      border: 1.5px solid var(--frost);
+      border-radius: 10px;
+      padding: 12px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: border-color 0.2s;
+      width: 100%;
+    }
+    .btn-secondary:hover { border-color: var(--mid); }
+
+    /* Destructive action — red text and border */
+    .btn-danger {
+      color: var(--fail);
+      border-color: rgba(220, 53, 69, 0.30);
+    }
+    .btn-danger:hover { border-color: var(--fail); }
+
+    /* Hidden file input — triggered by a visible button's onclick */
+    .input-hidden { display: none; }
+
+    /* Records list label */
+    .list-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: var(--steel);
+      margin-bottom: 10px;
+    }
+
+    /* Individual saved record card in the dashboard list */
+    .record-card {
+      background: white;
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--frost);
+    }
+    .rc-name {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 3px;
+    }
+    .rc-meta {
+      font-size: 12px;
+      color: var(--steel);
+      margin-bottom: 10px;
+    }
+    .rc-actions { display: flex; gap: 8px; }
+
+    /* Small action buttons on record cards */
+    .btn-card {
+      border: 1.5px solid var(--frost);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      background: white;
+      color: var(--dark);
+      transition: background 0.15s;
+    }
+    .btn-card:hover { background: var(--snow); }
+    .btn-card.open  { border-color: var(--scheme-primary); color: var(--scheme-primary); }
+    .btn-card.del   { border-color: rgba(220,53,69,0.30); color: var(--fail); }
+
+    /* Empty state shown when no records are saved yet */
+    .empty-state {
+      text-align: center;
+      padding: 48px 16px;
+      color: var(--steel);
+      font-size: 14px;
+    }
+    .empty-state strong {
+      display: block;
+      font-size: 15px;
+      color: var(--mid);
+      margin-bottom: 8px;
+    }
+
+    /* ===========================================================
+       SETUP VIEW
+       -----------------------------------------------------------
+       Company profile configuration. Values persist in
+       localStorage under the key defined by SETUP_KEY.
+    =========================================================== */
+    #setup { background: #F0F3F6; }
+
+    .setup-body {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* ===========================================================
+       CARD COMPONENT
+       -----------------------------------------------------------
+       Used in both setup and form views. A white rounded card
+       with a dark header band and optional note row.
+    =========================================================== */
+    .card {
+      background: white;
+      border-radius: var(--radius);
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--frost);
+      overflow: hidden;
+    }
+    .card-header {
+      background: var(--dark);
+      color: white;
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+    }
+    .card-note {
+      font-size: 12px;
+      color: var(--steel);
+      padding: 8px 14px;
+      background: var(--snow);
+      border-bottom: 1px solid var(--frost);
+    }
+    .card-body { padding: 16px 14px; }
+
+    /* ===========================================================
+       FORM FIELD COMPONENTS
+       -----------------------------------------------------------
+       .field wraps a label + input vertically.
+       .field-grid places two fields side by side.
+       .field-grid-3 places three fields side by side.
+       .field-grid-4 places four fields side by side.
+       On narrow screens all grids collapse to single column
+       via the responsive media query at the bottom of this file.
+    =========================================================== */
+    .field-grid   { display: grid; grid-template-columns: 1fr 1fr;       gap: 12px; }
+    .field-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr;   gap: 12px; }
+    .field-grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; }
+    .field-full   { grid-column: 1 / -1; }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+
+    .field label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--dark);
+    }
+    .field .sub-label {
+      font-weight: 400;
+      color: var(--steel);
+      font-size: 11px;
+    }
+
+    /* Unified input styles — applies to text, date, time, number, textarea, select */
+    .field input,
+    .field select,
+    .field textarea {
+      padding: 9px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--dark);
+      font-family: var(--font);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      background: white;
+    }
+    .field input:focus,
+    .field select:focus,
+    .field textarea:focus {
+      outline: none;
+      border-color: var(--scheme-primary);
+      box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.07);
+    }
+
+    /* Read-only fields (e.g., Total Hours) get a subtle background
+       to signal they cannot be edited. */
+    .field input[readonly] {
+      background: var(--snow);
+      color: var(--mid);
+      cursor: default;
+    }
+    .field textarea { resize: vertical; }
+
+    /* Work Report auto-expanding textarea.
+       Grows with content until max-height, then scrolls.
+       resize:none removes the drag handle since auto-resize makes it redundant. */
+    #workReport {
+      min-height: 160px;   /* ~8 visible lines on load */
+      max-height: 340px;   /* cap — scrollbar appears here for longer entries */
+      overflow-y: auto;
+      resize: none;
+      transition: height 0.1s ease;
+    }
+
+    /* Small hint text beneath a field */
+    .field-hint {
+      font-size: 11px;
+      color: var(--steel);
+      font-style: italic;
+      margin-top: 2px;
+    }
+
+    /* Character counter for the Work Report field */
+    .char-counter { font-size: 11px; color: var(--steel); text-align: right; margin-top: 3px; }
+    .char-counter.warn { color: var(--warn); font-weight: 600; }
+    .char-counter.over { color: var(--fail); font-weight: 700; }
+
+    /* ===========================================================
+       SECOND TIME BLOCK (v2.3)
+       -----------------------------------------------------------
+       The second clock in/out + lunch row is hidden until the user
+       taps "Add second time block". toggleSecondTimeBlock() flips
+       the .show class. The Grand Total row appears with it.
+    =========================================================== */
+    .time-block-2,
+    .time-grand-row { display: none; }
+    .time-block-2.show,
+    .time-grand-row.show { display: block; }
+
+    /* Small inline link-style button to add/remove the second block */
+    .btn-inline {
+      align-self: flex-start;
+      background: none;
+      border: 1.5px dashed var(--frost);
+      color: var(--mid);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-inline:hover { border-color: var(--mid); color: var(--dark); }
+    .btn-inline.remove { border-color: rgba(220,53,69,0.30); color: var(--fail); }
+    .btn-inline.remove:hover { border-color: var(--fail); }
+
+    /* Thin divider between the two time blocks */
+    .time-divider {
+      border-top: 1px dashed var(--frost);
+      margin: 14px 0 4px;
+    }
+    .time-block-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--steel);
+      margin-bottom: 8px;
+    }
+
+    /* ===========================================================
+       WORK NOTES CONTINUATION PAGES (v2.3)
+       -----------------------------------------------------------
+       Each continuation page is rendered into #continuationList by
+       renderContinuationPages(). One block per continuation page:
+       a labelled textarea (MAX_CONT_CHARS), its own counter, and a
+       Remove button. The "Add Continuation Page" button sits beside
+       the main Work Report counter and appends a new block.
+    =========================================================== */
+    .cont-add-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .cont-block {
+      border: 1.5px solid var(--frost);
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 12px;
+      background: #FAFCFE;
+    }
+    .cont-block-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .cont-block-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--dark);
+    }
+    .cont-block textarea {
+      width: 100%;
+      min-height: 140px;
+      max-height: 420px;
+      overflow-y: auto;
+      resize: none;
+      padding: 9px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--dark);
+      font-family: var(--font);
+      background: white;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .cont-block textarea:focus {
+      outline: none;
+      border-color: var(--scheme-primary);
+      box-shadow: 0 0 0 3px rgba(0,0,0,0.07);
+    }
+
+    /* ===========================================================
+       LOGO UPLOAD AREA (Setup view)
+       -----------------------------------------------------------
+       Clicking anywhere in the dashed area triggers the hidden
+       file input. The logo is shown as a preview after upload.
+       The Remove button deletes it from setup storage.
+    =========================================================== */
+    .logo-area {
+      border: 2px dashed var(--frost);
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .logo-area:hover { border-color: var(--mid); }
+
+    #logoPreview {
+      max-height: 60px;
+      max-width: 220px;
+      object-fit: contain;
+      display: none;
+      margin: 0 auto 8px;
+    }
+    .logo-upload-hint { font-size: 12px; color: var(--steel); }
+
+    #btnRemoveLogo {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--fail);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--font);
+      margin-top: 6px;
+    }
+
+    /* ===========================================================
+       COLOR SCHEME SELECTOR (Setup view)
+       -----------------------------------------------------------
+       Displays each scheme as a swatch button. Clicking one calls
+       selectScheme() which applies the color to the UI immediately
+       so the user sees the change before saving.
+    =========================================================== */
+    .scheme-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+      gap: 8px;
+    }
+    .scheme-btn {
+      border: 2px solid var(--frost);
+      border-radius: 8px;
+      padding: 10px 6px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--steel);
+      background: white;
+      transition: all 0.15s;
+      font-family: var(--font);
+    }
+    .scheme-btn:hover   { border-color: var(--mid); color: var(--dark); }
+    .scheme-btn.active  { border-color: var(--dark); color: var(--dark); background: var(--snow); }
+    .scheme-swatch {
+      width: 40px;
+      height: 26px;
+      border-radius: 4px;
+      border: 1px solid rgba(0,0,0,0.10);
+    }
+
+    /* Setup save button */
+    .btn-setup-save {
+      width: 100%;
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      border: none;
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.2s;
+      margin-top: 4px;
+    }
+    .btn-setup-save:hover { opacity: 0.85; }
+
+    /* ===========================================================
+       FORM VIEW
+       -----------------------------------------------------------
+       Data entry screen for a single daily field work record.
+       Sections are grouped into cards matching the original form.
+    =========================================================== */
+    #formView { background: #F0F3F6; }
+
+    .form-body {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 16px;
+    }
+
+    /* ===========================================================
+       WORK TYPE CHECKBOX CHIPS
+       -----------------------------------------------------------
+       Each work type is a styled label wrapping a checkbox.
+       The .checked class is toggled on the label to give a
+       visual "selected" state. The chip pattern gives a larger
+       tap target than a raw checkbox on touchscreen.
+    =========================================================== */
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .chip-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 13px;
+      border: 2px solid var(--frost);
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--dark);
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .chip-label:hover  { border-color: var(--mid); }
+    .chip-label.checked {
+      border-color: var(--scheme-primary);
+      background: var(--snow);
+      font-weight: 600;
+    }
+    .chip-label input[type="checkbox"] {
+      accent-color: var(--scheme-primary);
+      cursor: pointer;
+    }
+
+    /* "Other" text fields — hidden until the Other checkbox is checked.
+       Both Work Type Other and Attachment Other use this reveal pattern. */
+    #wtOtherText, #attOtherText {
+      display: none;
+      padding: 7px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 20px;
+      font-size: 13px;
+      color: var(--dark);
+      font-family: var(--font);
+      min-width: 120px;
+      flex: 1;
+    }
+    #wtOtherText:focus {
+      outline: none;
+      border-color: var(--scheme-primary);
+    }
+
+    /* ===========================================================
+       ATTACHMENT CHECKBOXES
+       -----------------------------------------------------------
+       Same chip pattern as work type, but rectangular chips
+       for a different visual treatment. Only indicate which
+       physical documents are attached — no file upload here.
+    =========================================================== */
+    .attach-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .attach-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--dark);
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .attach-chip:hover  { border-color: var(--mid); }
+    .attach-chip.checked {
+      border-color: var(--scheme-primary);
+      background: var(--snow);
+      font-weight: 600;
+    }
+    .attach-chip input[type="checkbox"] {
+      accent-color: var(--scheme-primary);
+      cursor: pointer;
+    }
+
+    /* Bottom save button in form view (matches header Save) */
+    .btn-form-save {
+      width: 100%;
+      background: var(--scheme-primary);
+      color: var(--scheme-text);
+      border: none;
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.2s;
+      margin-bottom: 24px;
+    }
+    .btn-form-save:hover { opacity: 0.85; }
+
+    /* ===========================================================
+       TOAST NOTIFICATION
+       -----------------------------------------------------------
+       Brief confirmation message shown after save, delete, import.
+       Appears at the bottom, fades in, then fades out after 2.5s.
+       showToast(msg) is the function that triggers it.
+    =========================================================== */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(16px);
+      background: var(--dark);
+      color: white;
+      padding: 10px 22px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0;
+      transition: opacity 0.3s, transform 0.3s;
+      z-index: 9999;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ===========================================================
+       RESPONSIVE ADJUSTMENTS
+       -----------------------------------------------------------
+       On narrow screens (phone, small tablet), multi-column
+       grids collapse to a single column for comfortable entry.
+    =========================================================== */
+    @media (max-width: 600px) {
+      .field-grid,
+      .field-grid-3,
+      .field-grid-4  { grid-template-columns: 1fr; }
+      .btn-grid-3    { grid-template-columns: 1fr 1fr; }
+    }
+
+  </style>
+</head>
+<body>
+
+<!-- ============================================================
+     SETUP VIEW
+     Company profile configuration — runs once, persists forever.
+     Accessed from the dashboard header "Setup" button or
+     automatically on first use if no setup data exists.
+     ============================================================ -->
+<div id="setup" class="screen">
+  <div class="view-header">
+    <div class="view-header-inner">
+      <button class="btn-header" onclick="closeSetup()">Back</button>
+      <span class="view-title">Company Setup</span>
+    </div>
+  </div>
+  <div class="setup-body">
+
+    <!-- Company Profile card -->
+    <div class="card">
+      <div class="card-header">Company Profile</div>
+      <div class="card-note">Saved once — appears on every printed form header and footer.</div>
+      <div class="card-body">
+        <div class="field-grid" style="gap:12px">
+          <div class="field field-full">
+            <label>Company Name</label>
+            <input type="text" id="setupCompany" placeholder="Your company name">
+          </div>
+          <div class="field">
+            <label>Address</label>
+            <input type="text" id="setupAddress" placeholder="Street address">
+          </div>
+          <div class="field">
+            <label>City, State ZIP</label>
+            <input type="text" id="setupCityState" placeholder="City, CA 00000">
+          </div>
+          <div class="field">
+            <label>Phone</label>
+            <!-- onblur formats 10-digit numbers to (XXX) XXX-XXXX when the user leaves the field -->
+            <input type="tel" id="setupPhone" placeholder="(000) 000-0000"
+                   onblur="formatPhone(this)">
+          </div>
+          <div class="field">
+            <label>Contact Email</label>
+            <input type="email" id="setupEmail" placeholder="contact@company.com">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logo Upload card
+         Clicking anywhere in the dashed area triggers the file picker.
+         The logo is resized to max 300px wide and stored as base64. -->
+    <div class="card">
+      <div class="card-header">Company Logo</div>
+      <div class="card-note">PNG or JPG recommended. Max display width: 300px. Stored locally — not uploaded anywhere.</div>
+      <div class="card-body">
+        <div class="logo-area" onclick="document.getElementById('logoFileInput').click()">
+          <img id="logoPreview" src="" alt="Logo preview">
+          <div class="logo-upload-hint" id="logoUploadHint">Click to upload logo (PNG, JPG)</div>
+          <button id="btnRemoveLogo" onclick="removeLogo(event)">Remove logo</button>
+        </div>
+        <input type="file" id="logoFileInput" class="input-hidden" accept="image/*" onchange="handleLogoUpload(event)">
+      </div>
+    </div>
+
+    <!-- Color Scheme card
+         The selected color drives the header, footer, and print footer.
+         MB Navy (#1B2A47) is the default scheme based on the original form. -->
+    <div class="card">
+      <div class="card-header">Color Scheme</div>
+      <div class="card-note">Sets the color of the app header, record card accents, and the printed form's footer band. Selecting a scheme previews it immediately.</div>
+      <div class="card-body">
+        <!-- Scheme buttons are built dynamically by buildSchemeButtons() in JS.
+             This makes it easy to add new schemes by editing the SCHEMES object. -->
+        <div class="scheme-grid" id="schemeGrid"></div>
+      </div>
+    </div>
+
+    <button class="btn-setup-save" onclick="saveSetup()">Save Setup</button>
+
+  </div>
+</div>
+
+
+<!-- ============================================================
+     DASHBOARD VIEW
+     The home screen. Shown on page load (or after setup).
+     Lists all saved records and provides action buttons.
+     ============================================================ -->
+<div id="dashboard" class="screen active">
+
+  <!-- Branding header — populated by updateDashboardHeader() -->
+  <div class="dash-header">
+    <div class="dash-header-inner">
+      <div class="dash-logo-area">
+        <!-- Logo is hidden until updateDashboardHeader() sets src and shows it -->
+        <img id="dashLogo" class="dash-logo-img" src="" alt="Company logo">
+        <div class="dash-company-name" id="dashCompanyName">Daily Field Work Record</div>
+        <div class="dash-tool-name">Labor Compliance Solutions</div>
+      </div>
+      <button class="dash-setup-btn" onclick="openSetup()">Setup</button>
+    </div>
+  </div>
+
+  <!-- localStorage usage bar -->
+  <div class="storage-wrap">
+    <div class="storage-inner">
+      <div class="storage-row">
+        <span>localStorage</span>
+        <span id="storageText">0.0 KB / ~5 MB</span>
+      </div>
+      <div class="storage-track">
+        <div class="storage-fill" id="storageFill" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dash-body">
+
+    <!-- New Record — the primary action -->
+    <div class="btn-grid-1">
+      <button class="btn-primary" onclick="newRecord()">+ New Record</button>
+    </div>
+
+    <!-- Backup management buttons -->
+    <div class="btn-grid-3">
+      <button class="btn-secondary" onclick="exportBackup()">Export Backup</button>
+      <!-- Import triggers the hidden multi-file input below -->
+      <button class="btn-secondary" onclick="document.getElementById('importInput').click()">Import Backup</button>
+      <button class="btn-secondary btn-danger" onclick="clearAllRecords()">Clear All</button>
+    </div>
+
+    <!-- Hidden file input for multi-file import.
+         The 'multiple' attribute allows selecting several JSON files at once.
+         All selected files are merged by importBackup(). -->
+    <input type="file" id="importInput" class="input-hidden" accept=".json" multiple onchange="importBackup(event)">
+
+    <!-- Records list — rendered by renderDashboard() -->
+    <div class="list-label">Saved Records</div>
+    <div class="output-helper dash-output-helper">
+      Generate the report as a PDF for saving, sharing, or printing.
+    </div>
+    <div id="recordsList"></div>
+
+  </div>
+</div>
+
+
+<!-- ============================================================
+     FORM VIEW
+     Data entry screen for a single daily field work record.
+     Section order follows the original field-report workflow.
+     ============================================================ -->
+<div id="formView" class="screen">
+
+  <!-- Sticky header — always visible while scrolling.
+       Contains Back, the record name, Save, and PDF actions. -->
+  <div class="view-header no-print">
+    <div class="view-header-inner">
+      <button class="btn-header" onclick="goBack()">Back</button>
+      <span class="view-title" id="formTitle">New Record</span>
+      <button class="btn-header" onclick="saveRecord()">Save</button>
+      <!-- v2.5.0: PDF (pdfmake) is the single report-output path. -->
+      <button class="btn-header" onclick="generatePdfCurrent()">PDF</button>
+    </div>
+  </div>
+  <div class="output-helper">
+    Generate the report as a PDF for saving, sharing, or printing.
+  </div>
+
+  <div class="form-body">
+
+    <!-- ── SECTION 1: Job Information ──────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">Job Information</div>
+      <div class="card-body">
+        <div class="field-grid" style="margin-bottom:12px">
+          <div class="field">
+            <label>Job Number</label>
+            <input type="text" id="jobNumber" placeholder="e.g. 12345">
+          </div>
+          <div class="field">
+            <label>Job Name</label>
+            <input type="text" id="jobName" placeholder="Project name">
+          </div>
+        </div>
+        <!-- Date, Work Location, and Total Pages in a 3-column row.
+             Total Pages populates the 'Page 1 of ___' field on the printed form.
+             The user enters the total page count including any attached sheets. -->
+        <div class="field-grid-3">
+          <div class="field">
+            <label>Date</label>
+            <!-- Auto-fills to today when a new record is created -->
+            <input type="date" id="recordDate">
+          </div>
+          <div class="field">
+            <label>Work Location</label>
+            <input type="text" id="workLocation" placeholder="Site address or GPS description">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 2: Work Type ─────────────────────────────────────
+         Chip-style checkboxes. The "Other" chip reveals a text input.
+         Each label wraps its checkbox for a larger tap target on tablet.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Work Type</div>
+      <div class="card-body">
+        <div class="chip-row">
+          <!-- updateChipStyle() toggles the .checked class on the label
+               to give visual feedback without needing custom CSS checkboxes. -->
+          <label class="chip-label" id="lbSurvey">
+            <input type="checkbox" id="wtSurvey" onchange="updateChipStyle('lbSurvey',this)">
+            Survey
+          </label>
+          <label class="chip-label" id="lbArch">
+            <input type="checkbox" id="wtArch" onchange="updateChipStyle('lbArch',this)">
+            Archaeological Excavation
+          </label>
+          <label class="chip-label" id="lbMonitor">
+            <input type="checkbox" id="wtMonitor" onchange="updateChipStyle('lbMonitor',this)">
+            Monitoring
+          </label>
+          <label class="chip-label" id="lbOther">
+            <input type="checkbox" id="wtOther" onchange="updateChipStyle('lbOther',this);toggleWtOther(this)">
+            Other
+          </label>
+          <!-- Revealed when "Other" is checked -->
+          <input type="text" id="wtOtherText" placeholder="Specify...">
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 3: Personnel ─────────────────────────────────────
+         Crew is a textarea because multiple people may need to be listed.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Personnel</div>
+      <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label>Your Name</label>
+          <input type="text" id="yourName" placeholder="Full name">
+        </div>
+        <div class="field">
+          <label>Crew <span class="sub-label">(name and affiliation)</span></label>
+          <!-- rows="3" gives two visible lines of text plus a partial third
+               to indicate more space is available. resize:vertical lets
+               users expand if needed. -->
+          <textarea id="crew" rows="3" placeholder="List crew members and affiliations, one per line"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 4: Time ──────────────────────────────────────────
+         Time In / Time Out use <input type="time"> which provides a
+         native time picker on all devices. The value is stored internally
+         as HH:MM in 24-hour format.
+
+         Total Hours is read-only and auto-calculated by calcTotalHours()
+         whenever Time In, Time Out, or Lunch changes.
+
+         Lunch is entered in minutes (not HH:MM) for simplicity.
+         The calculation converts everything to minutes, subtracts lunch,
+         then divides by 60 to get decimal hours.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Time</div>
+      <div class="card-body">
+        <!-- BLOCK 1 — the primary time row. Always visible. -->
+        <div class="field-grid-4">
+          <div class="field">
+            <label>Time In</label>
+            <input type="time" id="timeIn" onchange="calcTotalHours()">
+          </div>
+          <div class="field">
+            <label>Time Out</label>
+            <input type="time" id="timeOut" onchange="calcTotalHours()">
+          </div>
+          <div class="field">
+            <label>Lunch <span class="sub-label">(mins)</span></label>
+            <input type="number" id="lunchMins" placeholder="30" min="0" max="240" oninput="calcTotalHours()">
+          </div>
+          <div class="field">
+            <label>Total Hours</label>
+            <!-- readonly — never edited by the user directly -->
+            <input type="text" id="totalHours" readonly placeholder="Auto">
+            <span class="field-hint">Auto-calculated</span>
+          </div>
+        </div>
+
+        <!-- ADD/REMOVE SECOND BLOCK BUTTON (v2.3)
+             Tapping this reveals Block 2 and the Grand Total row.
+             toggleSecondTimeBlock() handles show/hide and recalculation. -->
+        <button type="button" class="btn-inline" id="btnAddTimeBlock"
+                style="margin-top:12px" onclick="toggleSecondTimeBlock(true)">
+          + Add second time block
+        </button>
+
+        <!-- BLOCK 2 — optional. Used for a shift split across midnight
+             (clock out 11:59 PM, clock back in 12:00 AM as a new day) or
+             a long day with a second meal break. Hidden until added; only
+             prints when it has data. Has its OWN lunch field so a 12-hour
+             day can record two breaks. -->
+        <div class="time-block-2" id="timeBlock2">
+          <div class="time-divider"></div>
+          <div class="time-block-label">Second Time Block</div>
+          <div class="field-grid-4">
+            <div class="field">
+              <label>Time In</label>
+              <input type="time" id="timeIn2" onchange="calcTotalHours()">
+            </div>
+            <div class="field">
+              <label>Time Out</label>
+              <input type="time" id="timeOut2" onchange="calcTotalHours()">
+            </div>
+            <div class="field">
+              <label>Lunch <span class="sub-label">(mins)</span></label>
+              <input type="number" id="lunchMins2" placeholder="30" min="0" max="240" oninput="calcTotalHours()">
+            </div>
+            <div class="field">
+              <label>Block 2 Hours</label>
+              <input type="text" id="totalHours2" readonly placeholder="Auto">
+              <span class="field-hint">Auto-calculated</span>
+            </div>
+          </div>
+          <button type="button" class="btn-inline remove" id="btnRemoveTimeBlock"
+                  style="margin-top:12px" onclick="toggleSecondTimeBlock(false)">
+            Remove second time block
+          </button>
+        </div>
+
+        <!-- GRAND TOTAL — sum of whichever blocks have data.
+             Appears only while Block 2 is in use. When a single block is
+             used, the regular Total Hours above is the figure of record. -->
+        <div class="time-grand-row" id="timeGrandRow">
+          <div class="time-divider"></div>
+          <div class="field" style="max-width:220px">
+            <label>Grand Total Hours <span class="sub-label">(both blocks)</span></label>
+            <input type="text" id="totalHoursGrand" readonly placeholder="Auto">
+            <span class="field-hint">Block 1 + Block 2, auto-calculated</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 5: Additional Personnel ─────────────────────────
+         All three fields use textareas because each may contain
+         multiple names and affiliations across several lines.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Additional Personnel</div>
+      <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label>Visitors <span class="sub-label">(name and affiliation)</span></label>
+          <textarea id="visitors" rows="3" placeholder="List visitors and affiliations"></textarea>
+        </div>
+        <div class="field">
+          <label>Native American Monitor <span class="sub-label">(name and affiliation)</span></label>
+          <textarea id="nativeMonitor" rows="3" placeholder="Monitor name and affiliation"></textarea>
+        </div>
+        <div class="field">
+          <label>Construction Crew <span class="sub-label">(name and affiliation)</span></label>
+          <textarea id="constructionCrew" rows="3" placeholder="Crew names and affiliations"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 6: Vehicle ────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">Vehicle</div>
+      <div class="card-body">
+        <div class="field-grid-3">
+          <div class="field">
+            <label>Vehicle</label>
+            <input type="text" id="vehicle" placeholder="Make, model, or ID">
+          </div>
+          <div class="field">
+            <label>Start Location</label>
+            <input type="text" id="startLocation" placeholder="Starting point">
+          </div>
+          <div class="field">
+            <label>Total Miles</label>
+            <input type="number" id="totalMiles" placeholder="0" min="0" step="0.1">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 7: Work Report ────────────────────────────────────
+         Free text narrative. The maxlength attribute prevents typing
+         beyond 2,200 characters. The oninput handler updates the live
+         character counter. pdfmake flows saved narrative content across
+         generated pages automatically.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Work Report</div>
+      <div class="card-note">Methods, work completed, stops/starts, discoveries, observations, soils, landforms, vegetation, disturbances, etc.</div>
+      <div class="card-body">
+        <div class="field">
+          <!-- rows="10" is overridden by the #workReport CSS min-height.
+               autoResizeTextarea() expands the box as the user types.
+               updateCharCount() refreshes the character counter below and
+               updates the live character counter as content is entered. -->
+          <textarea id="workReport" rows="10" maxlength="2200"
+            placeholder="Enter your field observations and work summary..."
+            oninput="autoResizeTextarea(this); updateCharCount()"></textarea>
+          <div class="char-counter" id="charCounter">0 / 2200</div>
+
+          <!-- Add Continuation Page (v2.3) — permanent button. Always
+               available, not gated on the character count, so the user is
+               in control. Appends a new continuation block to the list. -->
+          <div class="cont-add-row">
+            <span class="field-hint" id="contHint"></span>
+            <button type="button" class="btn-inline" onclick="addContinuationPage()">
+              + Add Continuation Page
+            </button>
+          </div>
+
+          <!-- Continuation blocks are rendered here by renderContinuationPages().
+               Each block is a labelled textarea (up to MAX_CONT_CHARS), its own
+               counter, and a Remove button. -->
+          <div id="continuationList"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SECTION 8: Attachments ────────────────────────────────────
+         Checkbox indicators only — these mark which physical documents
+         are attached to this record. No files are uploaded or stored.
+         ---------------------------------------------------------------- -->
+    <div class="card">
+      <div class="card-header">Attachments</div>
+      <div class="card-note">Check all physical documents attached to this record.</div>
+      <div class="card-body">
+        <div class="attach-row">
+          <label class="attach-chip" id="lcPhoto">
+            <input type="checkbox" id="attPhoto" onchange="updateChipStyle('lcPhoto',this)">
+            Photo Log
+          </label>
+          <label class="attach-chip" id="lcMap">
+            <input type="checkbox" id="attMap" onchange="updateChipStyle('lcMap',this)">
+            Map
+          </label>
+          <label class="attach-chip" id="lcSupp">
+            <input type="checkbox" id="attSupp" onchange="updateChipStyle('lcSupp',this)">
+            Supplementary Sheets
+          </label>
+          <label class="attach-chip" id="lcGps">
+            <input type="checkbox" id="attGps" onchange="updateChipStyle('lcGps',this)">
+            GPS Log
+          </label>
+          <label class="attach-chip" id="lcOther">
+            <!-- toggleAttOther() reveals the text field when this is checked -->
+            <input type="checkbox" id="attOther"
+                   onchange="updateChipStyle('lcOther',this);toggleAttOther(this)">
+            Other
+          </label>
+          <!-- Revealed when "Other" is checked — user types what the attachment is.
+               Mirrors the blank line after "Other" on the original paper form. -->
+          <input type="text" id="attOtherText" placeholder="Specify...">
+        </div>
+
+        <!-- v2.5.0: number of EXTERNAL supporting pages submitted with this
+             report. Shown in the generated PDF near the Attachments section.
+             pdfmake auto-numbers the report itself, so this is separate. -->
+        <div class="field" style="margin-top:12px">
+          <label>Additional Attached Pages</label>
+          <input type="number" id="additionalAttachedPages" placeholder="0" min="0" max="99"
+                 style="max-width:110px">
+          <span class="field-hint">Enter the number of external pages submitted with this report, such as photo logs, maps, GPS logs, or other supporting documents. Do not include the generated PDF pages.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom save button — same action as the header Save button.
+         Provides convenience without scrolling back to the top. -->
+    <!-- This bottom Save button saves AND returns to the dashboard.
+         The header Save button (above) saves in place for mid-entry saves.
+         saveAndReturn() calls saveRecord() then navigates back after a
+         brief delay so the user sees the 'Saved' confirmation toast. -->
+    <button class="btn-form-save no-print" onclick="saveAndReturn()">Save Record</button>
+
+  </div><!-- /form-body -->
+
+
+</div><!-- /formView -->
+
+<!-- Toast notification — shown briefly after user actions -->
+<div class="toast" id="toast"></div>
+
+
+<script>
+// ============================================================================
+// DAILY FIELD WORK RECORD — JavaScript
+// ============================================================================
+//
+// DATA FLOW:
+//   1. Page loads → DOMContentLoaded fires → loadSetup() + renderDashboard()
+//   2. User taps "New Record" → blankRecord() creates empty data object
+//   3. User fills the form → each field's oninput writes to currentRecord
+//   4. User taps Save → saveRecord() writes currentRecord to localStorage
+//   5. User taps PDF → buildDocDefinition() creates the document
+//      → pdfmake opens the generated PDF
+//
+// NOTE: There is no server. All data lives in the browser's localStorage.
+// Clearing browser data erases everything. Advise users to export regularly.
+//
+// ============================================================================
+
+
+// ── CONSTANTS ────────────────────────────────────────────────────────────────
+// localStorage key names. If you change these, existing saved data becomes
+// inaccessible (the app won't be able to find it). Keep these stable.
+const STORE_KEY = 'dfwr_records'; // Array of saved daily field work records
+const SETUP_KEY = 'dfwr_setup';   // Company profile and color scheme
+
+// Maximum characters in the Work Report field (data-entry limit).
+const MAX_REPORT_CHARS = 2200;
+
+// Maximum characters per Work Notes continuation page (data-entry limit).
+// Continuation content is authored by the user in the form and rendered by
+// pdfmake in the generated PDF.
+const MAX_CONT_CHARS = 5000;
+
+// ── COLOR SCHEMES ────────────────────────────────────────────────────────────
+// Each scheme has:
+//   primary — the main brand color (header, footer band, card open buttons)
+//   text    — text color on top of the primary (always white or black)
+//   label   — display name shown in the scheme selector
+//
+// The default is 'navy' (MB Navy), based on the original form color.
+//
+// TO ADD A NEW SCHEME: add a new key with primary/text/label values.
+// The key string is what gets saved in localStorage as setup.scheme.
+const SCHEMES = {
+  navy:     { primary: '#1B2A47', text: '#FFFFFF', label: 'MB Navy' },
+  slate:    { primary: '#1E3A5F', text: '#FFFFFF', label: 'Slate Blue'    },
+  charcoal: { primary: '#2C2C2E', text: '#FFFFFF', label: 'Charcoal'      },
+  forest:   { primary: '#1A3C28', text: '#FFFFFF', label: 'Forest'        },
+  maroon:   { primary: '#7B1D1D', text: '#FFFFFF', label: 'Maroon'        },
+};
+
+
+// ── RUNTIME STATE ─────────────────────────────────────────────────────────────
+// currentRecord holds the record currently being edited in the form view.
+// It is set by newRecord() and openRecord(), and written by saveRecord().
+// It is null when the form is not open.
+let currentRecord = null;
+
+// currentScheme tracks which scheme key is selected.
+// Updated by selectScheme() and saved to setup.
+let currentScheme = 'navy';
+
+
+// ── DATA MODEL ───────────────────────────────────────────────────────────────
+// blankRecord() returns a new record with all fields at their default values.
+// This object is the authoritative definition of what a record contains.
+//
+// IF YOU ADD A NEW FIELD to the form:
+//   1. Add it here with a default value
+//   2. Add the HTML input in the form view above
+//   3. Add it to populateForm() to load saved values
+//   4. Add it to saveRecord() to capture the value on save
+//   5. Add it to build-doc.js if it must appear in the generated PDF
+function blankRecord() {
+  return {
+    // ── System fields (auto-managed) ──
+    id:      Date.now().toString(),          // Unique identifier for this record
+    created: new Date().toISOString(),        // ISO timestamp when created
+    updated: new Date().toISOString(),        // ISO timestamp of last save
+
+    // ── Attached pages ──
+    // Number of EXTERNAL supporting pages submitted with the report (photo
+    // logs, maps, GPS logs, etc.). Shown in the generated PDF near the
+    // Attachments section. Blank/0 by default. pdfmake auto-numbers the report
+    // itself ("Page X of Y"), so this is NOT the report's own page count.
+    additionalAttachedPages: '',
+    // LEGACY: older records may carry a `totalPages` value from earlier
+    // versions. It represented a different thing (manual report page count)
+    // and is intentionally IGNORED — never copied into additionalAttachedPages.
+    // Kept here as '' so the field name still exists; old values on imported
+    // records are preserved as-is and simply not used.
+    totalPages: '',
+
+    // ── Job Information ──
+    jobNumber:    '',
+    jobName:      '',
+    date:         new Date().toISOString().slice(0, 10), // 'YYYY-MM-DD', defaults to today
+    workLocation: '',
+
+    // ── Work Type (checkbox booleans) ──
+    wtSurvey:    false,
+    wtArch:      false,
+    wtMonitor:   false,
+    wtOther:     false,
+    wtOtherText: '', // Text entered when wtOther is true
+
+    // ── Personnel ──
+    yourName: '',
+    crew:     '', // Multi-line textarea
+
+    // ── Time (Block 1 — the primary clock in/out) ──
+    timeIn:     '', // 'HH:MM' 24-hour format (from <input type="time">)
+    timeOut:    '', // 'HH:MM' 24-hour format
+    lunchMins:  '', // Number of minutes for lunch break
+    totalHours: '', // Read-only, computed by calcTotalHours()
+
+    // ── Time (Block 2 — optional second clock in/out, v2.3) ──
+    // Used for a shift split across midnight, or a long day with a second
+    // meal break. Empty on most records. Has its own lunch field.
+    timeIn2:     '',
+    timeOut2:    '',
+    lunchMins2:  '',
+    totalHours2: '',
+    useBlock2:   false, // true once the user adds the second block
+
+    // Grand total of whichever blocks have data (v2.3). When only Block 1
+    // is used this equals totalHours; the form shows the grand total only
+    // while Block 2 is active.
+    totalHoursGrand: '',
+
+    // ── Additional Personnel (multi-line textareas) ──
+    visitors:         '',
+    nativeMonitor:    '',
+    constructionCrew: '',
+
+    // ── Vehicle ──
+    vehicle:       '',
+    startLocation: '',
+    totalMiles:    '',
+
+    // ── Work Report ──
+    workReport: '', // Free text, max MAX_REPORT_CHARS characters
+
+    // ── Work Notes Continuation Pages (v2.3) ──
+    // An array of plain strings, one per continuation sheet. Empty on most
+    // records. Stored as an array from the start so any number of pages is
+    // supported. Old records that predate this field simply load as []
+    // (handled in populateForm / openRecord normalization).
+    continuationPages: [],
+
+    // ── Attachments (checkbox booleans — indicate physical documents only) ──
+    attPhoto:     false,
+    attMap:       false,
+    attSupp:      false,
+    attGps:       false,
+    attOther:     false,
+    attOtherText: '', // Text entered when attOther is true (mirrors original form)
+  };
+}
+
+
+// ── STORAGE HELPERS ───────────────────────────────────────────────────────────
+// These are the only four functions that read/write localStorage.
+// Keeping storage access centralized here makes it easy to swap in a
+// different backend later (e.g., IndexedDB for larger data, or a server API).
+
+/** Returns all saved records as an array. Empty array if none or corrupted. */
+function getAll() {
+  try   { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); }
+  catch { return []; }
+}
+
+/** Saves the complete records array to localStorage. Overwrites everything. */
+function saveAll(arr) {
+  localStorage.setItem(STORE_KEY, JSON.stringify(arr));
+}
+
+/** Returns the saved setup object. Empty object if none or corrupted. */
+function getSetup() {
+  try   { return JSON.parse(localStorage.getItem(SETUP_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+/** Saves the setup object to localStorage. */
+function saveSetupData(s) {
+  localStorage.setItem(SETUP_KEY, JSON.stringify(s));
+}
+
+
+// ── INITIALIZATION ────────────────────────────────────────────────────────────
+// DOMContentLoaded fires after the HTML is fully parsed but before images load.
+// We use it to initialize the app state before anything is visible.
+document.addEventListener('DOMContentLoaded', function () {
+  // Apply saved color scheme before rendering anything
+  const s = getSetup();
+  applyScheme(s.scheme || 'navy');
+
+  // Build the scheme selector buttons in the setup view
+  buildSchemeButtons();
+
+  // Render the dashboard with saved records
+  renderDashboard();
+});
+
+
+// ── COLOR SCHEME ──────────────────────────────────────────────────────────────
+
+/**
+ * Builds the color scheme selector buttons in the setup view.
+ * Reads from the SCHEMES constant — add entries there to add more options.
+ * Called once on DOMContentLoaded.
+ */
+function buildSchemeButtons() {
+  const grid = document.getElementById('schemeGrid');
+  if (!grid) return;
+
+  // Build a button for each scheme using Object.entries() to loop key+value pairs
+  grid.innerHTML = Object.entries(SCHEMES).map(([key, scheme]) => `
+    <button class="scheme-btn ${key === currentScheme ? 'active' : ''}"
+            data-scheme="${key}"
+            onclick="selectScheme('${key}')">
+      <div class="scheme-swatch" style="background:${scheme.primary}"></div>
+      ${scheme.label}
+    </button>
+  `).join('');
+}
+
+/**
+ * Applies a color scheme to the live UI by updating CSS custom properties
+ * on the document root element.
+ *
+ * HOW CSS CUSTOM PROPERTIES WORK:
+ * document.documentElement is the <html> element. Setting a style property
+ * here overrides the :root value in the stylesheet, and because every
+ * element using var(--scheme-primary) references this value, the change
+ * cascades instantly across the entire UI.
+ *
+ * @param {string} key — key from the SCHEMES object (e.g., 'navy', 'slate')
+ */
+function applyScheme(key) {
+  const scheme = SCHEMES[key] || SCHEMES.navy;
+  document.documentElement.style.setProperty('--scheme-primary', scheme.primary);
+  document.documentElement.style.setProperty('--scheme-text',    scheme.text);
+  currentScheme = key;
+}
+
+/**
+ * Called when user clicks a scheme button.
+ * Applies the new scheme immediately (before saving) so they see the preview.
+ */
+function selectScheme(key) {
+  applyScheme(key);
+  // Mark the clicked button active, unmark all others
+  document.querySelectorAll('.scheme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scheme === key);
+  });
+}
+
+
+// ── SETUP ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Opens the setup view and populates all fields with currently saved values.
+ */
+function openSetup() {
+  const s = getSetup();
+  document.getElementById('setupCompany').value  = s.company   || '';
+  document.getElementById('setupAddress').value  = s.address   || '';
+  document.getElementById('setupCityState').value = s.cityState || '';
+  document.getElementById('setupPhone').value    = s.phone     || '';
+  // Format the loaded phone number so previously stored raw digits display correctly
+  formatPhone(document.getElementById('setupPhone'));
+  document.getElementById('setupEmail').value    = s.email     || '';
+
+  // Show logo preview if one is saved
+  if (s.logo) {
+    document.getElementById('logoPreview').src           = s.logo;
+    document.getElementById('logoPreview').style.display = 'block';
+    document.getElementById('logoUploadHint').style.display = 'none';
+    document.getElementById('btnRemoveLogo').style.display  = 'block';
+  } else {
+    document.getElementById('logoPreview').style.display    = 'none';
+    document.getElementById('logoUploadHint').style.display = 'block';
+    document.getElementById('btnRemoveLogo').style.display  = 'none';
+  }
+
+  // Apply the saved scheme and mark the correct button active
+  applyScheme(s.scheme || 'navy');
+  document.querySelectorAll('.scheme-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scheme === currentScheme);
+  });
+
+  showScreen('setup');
+}
+
+/**
+ * Closes setup and returns to the previous screen.
+ * If a record is open in the form, returns there; otherwise goes to dashboard.
+ */
+function closeSetup() {
+  currentRecord ? showScreen('formView') : showScreen('dashboard');
+}
+
+/**
+ * Reads all setup fields and saves them to localStorage, then closes setup.
+ * The logo is preserved from the existing setup (it's managed separately
+ * by handleLogoUpload and removeLogo, not by the Save button).
+ */
+function saveSetup() {
+  const existing = getSetup();
+  saveSetupData({
+    company:   document.getElementById('setupCompany').value.trim(),
+    address:   document.getElementById('setupAddress').value.trim(),
+    cityState: document.getElementById('setupCityState').value.trim(),
+    phone:     document.getElementById('setupPhone').value.trim(),
+    email:     document.getElementById('setupEmail').value.trim(),
+    scheme:    currentScheme,
+    logo:      existing.logo || null, // Preserve existing logo
+  });
+
+  applyScheme(currentScheme);
+  updateDashboardHeader();
+  showToast('Setup saved');
+  closeSetup();
+}
+
+// ── LOGO UPLOAD ───────────────────────────────────────────────────────────────
+
+/**
+ * Handles a logo file selection from the file picker.
+ *
+ * WHY WE RESIZE AND COMPRESS:
+ * Raw image files can be several megabytes. localStorage has a ~5MB limit
+ * shared across all keys. We resize the logo to a maximum width of 300px
+ * (maintaining aspect ratio) and compress to JPEG at 70% quality.
+ * This keeps each logo under ~50KB, leaving room for many records.
+ *
+ * CANVAS TECHNIQUE:
+ * We draw the image onto an off-screen HTML canvas at the target dimensions,
+ * then export it as a base64 data URL (a text string). This string is what
+ * gets stored in localStorage and displayed in <img> elements.
+ *
+ * @param {Event} evt — the change event from the file input
+ */
+function handleLogoUpload(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const img = new Image();
+    img.onload = function () {
+      // Calculate scaled dimensions — max 300px wide, maintain aspect ratio
+      const MAX_W = 300;
+      const scale = Math.min(1, MAX_W / img.width);
+      const w     = Math.round(img.width  * scale);
+      const h     = Math.round(img.height * scale);
+
+      // Draw to an off-screen canvas at target size
+      const canvas = document.createElement('canvas');
+      canvas.width  = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+
+      // Export — use PNG format to preserve transparency in PNG/SVG logos
+      const isPng   = file.type === 'image/png' || file.type === 'image/svg+xml';
+      const logoB64 = isPng
+        ? canvas.toDataURL('image/png')
+        : canvas.toDataURL('image/jpeg', 0.70);
+
+      // Update the preview immediately
+      const preview = document.getElementById('logoPreview');
+      preview.src           = logoB64;
+      preview.style.display = 'block';
+      document.getElementById('logoUploadHint').style.display = 'none';
+      document.getElementById('btnRemoveLogo').style.display  = 'block';
+
+      // Save logo to setup immediately — don't wait for the Save button
+      const s = getSetup();
+      s.logo = logoB64;
+      saveSetupData(s);
+
+      updateDashboardHeader();
+      showToast('Logo uploaded');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+
+  // Reset so the same file can be re-uploaded if needed
+  evt.target.value = '';
+}
+
+/**
+ * Removes the stored logo and resets the upload area.
+ * event.stopPropagation() prevents the click from bubbling to the
+ * logo-area div and accidentally re-opening the file picker.
+ */
+function removeLogo(event) {
+  event.stopPropagation();
+
+  const s = getSetup();
+  delete s.logo;
+  saveSetupData(s);
+
+  document.getElementById('logoPreview').style.display    = 'none';
+  document.getElementById('logoUploadHint').style.display = 'block';
+  document.getElementById('btnRemoveLogo').style.display  = 'none';
+
+  updateDashboardHeader();
+  showToast('Logo removed');
+}
+
+
+// ── DASHBOARD ─────────────────────────────────────────────────────────────────
+
+/**
+ * Updates the dashboard branding area with current setup values.
+ * Called on load, after saving setup, and after logo changes.
+ */
+function updateDashboardHeader() {
+  const s = getSetup();
+
+  document.getElementById('dashCompanyName').textContent =
+    s.company || 'Daily Field Work Record';
+
+  const logoEl = document.getElementById('dashLogo');
+  if (s.logo) {
+    logoEl.src           = s.logo;
+    logoEl.style.display = 'block';
+  } else {
+    logoEl.style.display = 'none';
+  }
+}
+
+/**
+ * Renders the complete dashboard: updates header, storage meter,
+ * and the list of saved records sorted by date (newest first).
+ */
+function renderDashboard() {
+  updateDashboardHeader();
+  updateStorageMeter();
+
+  const records = getAll();
+  const list    = document.getElementById('recordsList');
+
+  if (records.length === 0) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <strong>No saved records yet.</strong>
+        Tap "+ New Record" to create your first daily field work record.
+      </div>`;
+    return;
+  }
+
+  // Sort newest first by date, falling back to created timestamp
+  const sorted = [...records].sort((a, b) =>
+    ((b.date || b.created) > (a.date || a.created)) ? 1 : -1
+  );
+
+  list.innerHTML = sorted.map(r => `
+    <div class="record-card">
+      <div class="rc-name">${esc(r.yourName || 'Unnamed Record')}</div>
+      <div class="rc-meta">
+        ${esc(r.jobName || '—')}
+        ${r.jobNumber ? ' &nbsp;#' + esc(r.jobNumber) : ''}
+        &nbsp;&middot;&nbsp; ${r.date || ''}
+        &nbsp;&middot;&nbsp; Saved: ${new Date(r.updated).toLocaleString()}
+      </div>
+      <div class="rc-actions">
+        <button class="btn-card open"   onclick="openRecord('${r.id}')">Open</button>
+        <button class="btn-card"        onclick="generatePdfById('${r.id}')">PDF</button>
+        <button class="btn-card del"    onclick="deleteRecord('${r.id}')">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+/**
+ * Calculates and displays current localStorage usage.
+ * localStorage stores strings in UTF-16, so each character is 2 bytes.
+ * The ~5MB limit is approximate and varies by browser.
+ */
+function updateStorageMeter() {
+  let bytes = 0;
+  for (let key in localStorage) {
+    if (localStorage.hasOwnProperty(key)) {
+      bytes += (localStorage[key].length + key.length) * 2;
+    }
+  }
+  const kb  = (bytes / 1024).toFixed(1);
+  const pct = Math.min((bytes / (5 * 1024 * 1024)) * 100, 100).toFixed(1);
+
+  document.getElementById('storageText').textContent = `${kb} KB / ~5 MB`;
+  document.getElementById('storageFill').style.width = pct + '%';
+}
+
+
+// ── NAVIGATION ────────────────────────────────────────────────────────────────
+
+/**
+ * Shows one screen and hides all others.
+ * This is the entire navigation system — a simple class toggle.
+ *
+ * @param {string} id — the id of the <div class="screen"> to make active
+ */
+function showScreen(id) {
+  ['setup', 'dashboard', 'formView'].forEach(sid => {
+    document.getElementById(sid).classList.toggle('active', sid === id);
+  });
+}
+
+/**
+ * Navigates back to the dashboard from the form view.
+ * Clears currentRecord so the next "New Record" starts fresh.
+ */
+function goBack() {
+  currentRecord = null;
+  showScreen('dashboard');
+  renderDashboard();
+}
+
+
+// ── RECORD MANAGEMENT ─────────────────────────────────────────────────────────
+
+/** Creates a new blank record and opens the form for data entry. */
+function newRecord() {
+  currentRecord = blankRecord();
+  populateForm(currentRecord);
+  showScreen('formView');
+  document.getElementById('formTitle').textContent = 'New Record';
+}
+
+/**
+ * Finds a record by ID and opens it for editing.
+ * Works on a shallow copy so canceling (Back without Save) leaves original intact.
+ * @param {string} id — the record's unique id
+ */
+function openRecord(id) {
+  const rec = getAll().find(r => r.id === id);
+  if (!rec) { showToast('Record not found'); return; }
+  currentRecord = { ...rec };
+  populateForm(currentRecord);
+  showScreen('formView');
+  document.getElementById('formTitle').textContent =
+    rec.yourName || rec.jobName || 'Edit Record';
+}
+
+/**
+ * Deletes a record by ID after confirmation.
+ * @param {string} id — the record's unique id
+ */
+function deleteRecord(id) {
+  if (!confirm('Delete this record? This cannot be undone.')) return;
+  saveAll(getAll().filter(r => r.id !== id));
+  renderDashboard();
+  showToast('Record deleted');
+}
+
+/** Clears all records after double confirmation. */
+function clearAllRecords() {
+  const all = getAll();
+  if (all.length === 0) { showToast('No records to clear'); return; }
+  if (!confirm('Delete ALL ' + all.length + ' records? This cannot be undone.')) return;
+  if (!confirm('Are you sure? This permanently deletes all saved records.')) return;
+  saveAll([]);
+  renderDashboard();
+  showToast('All records cleared');
+}
+
+
+// ── FORM POPULATION ───────────────────────────────────────────────────────────
+
+/**
+ * Fills all form inputs with data from a record object.
+ * Called when opening a new or existing record.
+ * Each line sets one form element from the corresponding record field.
+ *
+ * @param {object} r — a record object (from blankRecord() or getAll())
+ */
+function populateForm(r) {
+  // Job Information
+  v('jobNumber',    r.jobNumber);
+  v('jobName',      r.jobName);
+  v('recordDate',   r.date || new Date().toISOString().slice(0, 10));
+  v('workLocation', r.workLocation);
+  // Load the external-pages field. No fallback to legacy totalPages (different
+  // meaning); old records simply show blank/0.
+  v('additionalAttachedPages', r.additionalAttachedPages);
+
+  // Work Type
+  chk('wtSurvey',  r.wtSurvey,  'lbSurvey');
+  chk('wtArch',    r.wtArch,    'lbArch');
+  chk('wtMonitor', r.wtMonitor, 'lbMonitor');
+  chk('wtOther',   r.wtOther,   'lbOther');
+  v('wtOtherText', r.wtOtherText);
+  document.getElementById('wtOtherText').style.display = r.wtOther ? 'inline-block' : 'none';
+
+  // Personnel
+  v('yourName', r.yourName);
+  v('crew',     r.crew);
+
+  // Time (Block 1)
+  v('timeIn',     r.timeIn);
+  v('timeOut',    r.timeOut);
+  v('lunchMins',  r.lunchMins);
+  v('totalHours', r.totalHours);
+
+  // Time (Block 2, v2.3) — normalize older records that lack these fields.
+  v('timeIn2',     r.timeIn2);
+  v('timeOut2',    r.timeOut2);
+  v('lunchMins2',  r.lunchMins2);
+  v('totalHours2', r.totalHours2);
+  // Show the second block if the record uses it OR has any block-2 data.
+  const hasBlock2Data = !!(r.timeIn2 || r.timeOut2 || r.lunchMins2);
+  setSecondBlockVisible(r.useBlock2 || hasBlock2Data);
+  // Recompute totals from the loaded values (also fills the grand total).
+  calcTotalHours();
+
+  // Additional Personnel
+  v('visitors',         r.visitors);
+  v('nativeMonitor',    r.nativeMonitor);
+  v('constructionCrew', r.constructionCrew);
+
+  // Vehicle
+  v('vehicle',       r.vehicle);
+  v('startLocation', r.startLocation);
+  v('totalMiles',    r.totalMiles);
+
+  // Work Report
+  v('workReport', r.workReport);
+  // Resize the textarea to fit the loaded content (no scrollbar on open)
+  const wrEl = document.getElementById('workReport');
+  if (wrEl) autoResizeTextarea(wrEl);
+  updateCharCount();
+
+  // Work Notes Continuation Pages (v2.3)
+  // Normalize: older records have no continuationPages field — treat as [].
+  if (!Array.isArray(r.continuationPages)) r.continuationPages = [];
+  renderContinuationPages();
+
+  // Attachments
+  chk('attPhoto', r.attPhoto, 'lcPhoto');
+  chk('attMap',   r.attMap,   'lcMap');
+  chk('attSupp',  r.attSupp,  'lcSupp');
+  chk('attGps',   r.attGps,   'lcGps');
+  chk('attOther', r.attOther, 'lcOther');
+  v('attOtherText', r.attOtherText);
+  // Show/hide the attachment Other text field based on saved state
+  document.getElementById('attOtherText').style.display = r.attOther ? 'inline-block' : 'none';
+}
+
+/**
+ * Helper: sets the value of an input or textarea by element id.
+ * The empty string fallback prevents "undefined" from appearing in inputs.
+ */
+function v(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.value = val || '';
+}
+
+/**
+ * Helper: sets a checkbox state and applies/removes the .checked style class
+ * on its parent label for visual feedback.
+ *
+ * @param {string}  cbId    — id of the checkbox element
+ * @param {boolean} val     — true to check, false to uncheck
+ * @param {string}  labelId — id of the wrapping label element
+ */
+function chk(cbId, val, labelId) {
+  const cb    = document.getElementById(cbId);
+  const label = document.getElementById(labelId);
+  if (cb)    cb.checked = !!val;
+  if (label) label.classList.toggle('checked', !!val);
+}
+
+
+// ── SAVE RECORD ───────────────────────────────────────────────────────────────
+
+/**
+ * Reads all form fields into currentRecord and saves to localStorage.
+ * If the record already exists in the array, it replaces it.
+ * If it is new, it appends it.
+ *
+ * The updated timestamp is always refreshed so export filenames
+ * and dashboard sorting reflect the most recent save.
+ */
+function saveRecord(silent = false) {
+  if (!currentRecord) return;
+
+  // Read every form field into the record object
+  currentRecord.jobNumber    = g('jobNumber');
+  currentRecord.jobName      = g('jobName');
+  currentRecord.date         = g('recordDate');
+  currentRecord.workLocation = g('workLocation');
+  // Capture external attached pages. We do NOT write currentRecord.totalPages
+  // (legacy): it keeps whatever an imported record had, and is never used.
+  currentRecord.additionalAttachedPages = g('additionalAttachedPages');
+
+  currentRecord.wtSurvey    = document.getElementById('wtSurvey').checked;
+  currentRecord.wtArch      = document.getElementById('wtArch').checked;
+  currentRecord.wtMonitor   = document.getElementById('wtMonitor').checked;
+  currentRecord.wtOther     = document.getElementById('wtOther').checked;
+  currentRecord.wtOtherText = g('wtOtherText');
+
+  currentRecord.yourName = g('yourName');
+  currentRecord.crew     = g('crew');
+
+  currentRecord.timeIn     = g('timeIn');
+  currentRecord.timeOut    = g('timeOut');
+  currentRecord.lunchMins  = g('lunchMins');
+  currentRecord.totalHours = g('totalHours');
+
+  // Second time block (v2.3) — capture whether it's in use and its values.
+  currentRecord.useBlock2   = document.getElementById('timeBlock2').classList.contains('show');
+  currentRecord.timeIn2     = g('timeIn2');
+  currentRecord.timeOut2    = g('timeOut2');
+  currentRecord.lunchMins2  = g('lunchMins2');
+  currentRecord.totalHours2 = g('totalHours2');
+  currentRecord.totalHoursGrand = g('totalHoursGrand');
+
+  currentRecord.visitors         = g('visitors');
+  currentRecord.nativeMonitor    = g('nativeMonitor');
+  currentRecord.constructionCrew = g('constructionCrew');
+
+  currentRecord.vehicle       = g('vehicle');
+  currentRecord.startLocation = g('startLocation');
+  currentRecord.totalMiles    = g('totalMiles');
+
+  currentRecord.workReport = g('workReport');
+
+  // Work Notes Continuation Pages (v2.3) — read each textarea back into the
+  // array. We keep the array in sync on input, but re-reading here is the
+  // authoritative capture at save time. Trailing fully-blank pages are kept
+  // as the user left them; blank pages simply won't print.
+  currentRecord.continuationPages = readContinuationFromDOM();
+
+  currentRecord.attPhoto = document.getElementById('attPhoto').checked;
+  currentRecord.attMap   = document.getElementById('attMap').checked;
+  currentRecord.attSupp  = document.getElementById('attSupp').checked;
+  currentRecord.attGps   = document.getElementById('attGps').checked;
+  currentRecord.attOther     = document.getElementById('attOther').checked;
+  currentRecord.attOtherText = g('attOtherText');
+
+  currentRecord.updated = new Date().toISOString();
+
+  // Merge: replace existing record with same ID, or append if new
+  const all = getAll();
+  const idx = all.findIndex(r => r.id === currentRecord.id);
+  if (idx >= 0) {
+    all[idx] = currentRecord;
+  } else {
+    all.push(currentRecord);
+  }
+  saveAll(all);
+
+  // Update the form title with the person's name
+  document.getElementById('formTitle').textContent =
+    currentRecord.yourName || currentRecord.jobName || 'Saved';
+
+  updateStorageMeter();
+  if (!silent) showToast('Saved');
+}
+
+/** Helper: gets the trimmed value of an input by id. */
+function g(id) {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : '';
+}
+
+/**
+ * Saves the current record and returns to the dashboard.
+ * Used by the bottom 'Save Record' button.
+ *
+ * WHY A DELAY:
+ * showToast() displays a brief confirmation message. If we called
+ * goBack() immediately, the view would change before the user sees it.
+ * A 700ms delay lets the toast appear, then navigates away.
+ *
+ * NOTE: The header Save button still calls saveRecord() directly
+ * so users can save mid-entry without losing their place in the form.
+ */
+function saveAndReturn() {
+  saveRecord();                        // Save all current form data (persisted)
+  setTimeout(() => goBack(), 700);     // Brief pause so toast is visible
+}
+
+// ── TIME CALCULATION ──────────────────────────────────────────────────────────
+
+/**
+ * Computes decimal hours for ONE time block from its three inputs.
+ *
+ * HOW IT WORKS:
+ * <input type="time"> always returns time in 24-hour HH:MM format internally,
+ * regardless of how it displays. This makes the arithmetic straightforward:
+ *   1. Parse "HH:MM" strings into integers (hours and minutes)
+ *   2. Convert both times to total minutes since midnight
+ *   3. If Time Out <= Time In, add 24*60 to handle overnight shifts
+ *   4. Subtract Time In and Lunch from Time Out
+ *   5. Divide remaining minutes by 60 for decimal hours
+ *
+ * EXAMPLE: In 08:00, Out 16:30, Lunch 30 → (990 - 480 - 30) / 60 = 8.00 hrs
+ *
+ * @param {string} inId    — element id of the Time In input
+ * @param {string} outId   — element id of the Time Out input
+ * @param {string} lunchId — element id of the Lunch (minutes) input
+ * @returns {number|null} decimal hours, or null if the block is incomplete
+ *          (so callers can tell "blank block" apart from "0 hours")
+ */
+function calcBlockHours(inId, outId, lunchId) {
+  const timeIn  = document.getElementById(inId).value;
+  const timeOut = document.getElementById(outId).value;
+  const lunch   = parseFloat(document.getElementById(lunchId).value) || 0;
+
+  // Incomplete block (missing in or out) → null, so it's ignored in the
+  // grand total rather than counted as zero.
+  if (!timeIn || !timeOut) return null;
+
+  const [inH,  inM]  = timeIn.split(':').map(Number);
+  const [outH, outM] = timeOut.split(':').map(Number);
+
+  let inMins  = inH  * 60 + inM;
+  let outMins = outH * 60 + outM;
+
+  // Handle overnight: if out time is before (or equal to) in time, next day.
+  if (outMins <= inMins) outMins += 24 * 60;
+
+  const worked = outMins - inMins - lunch;
+  return worked > 0 ? worked / 60 : 0;
+}
+
+/**
+ * Recalculates both time blocks and the grand total.
+ * Wired to the onchange/oninput handlers on every time input (both blocks).
+ *
+ * - Block 1 total → #totalHours
+ * - Block 2 total → #totalHours2 (only meaningful when the block is shown)
+ * - Grand total   → #totalHoursGrand = sum of whichever blocks have data
+ *
+ * A blank block contributes nothing. If only Block 1 is filled, the grand
+ * total equals Block 1 — but the grand-total ROW is only shown to the user
+ * while Block 2 is active (toggleSecondTimeBlock controls that).
+ *
+ * NOTE: the function name stays calcTotalHours() because it is referenced by
+ * many inline handlers; it now does the full multi-block calculation.
+ */
+function calcTotalHours() {
+  const b1 = calcBlockHours('timeIn',  'timeOut',  'lunchMins');
+  const b2 = calcBlockHours('timeIn2', 'timeOut2', 'lunchMins2');
+
+  // Fill each block's own readonly field (blank when that block is empty).
+  document.getElementById('totalHours').value  = (b1 === null) ? '' : b1.toFixed(2);
+  document.getElementById('totalHours2').value = (b2 === null) ? '' : b2.toFixed(2);
+
+  // Grand total = sum of the blocks that actually have data.
+  const grand = (b1 || 0) + (b2 || 0);
+  const anyData = (b1 !== null) || (b2 !== null);
+  document.getElementById('totalHoursGrand').value = anyData ? grand.toFixed(2) : '';
+}
+
+/**
+ * Shows or hides the second time block and the grand-total row (v2.3).
+ * Pure UI state — also used by populateForm() to restore the saved state.
+ *
+ * @param {boolean} visible — true to show Block 2 + grand total
+ */
+function setSecondBlockVisible(visible) {
+  document.getElementById('timeBlock2').classList.toggle('show', visible);
+  document.getElementById('timeGrandRow').classList.toggle('show', visible);
+  // The "+ Add second time block" button is only useful while hidden.
+  document.getElementById('btnAddTimeBlock').style.display = visible ? 'none' : 'inline-block';
+}
+
+/**
+ * Toggle handler for the add/remove second time block buttons.
+ * When removing, the block's inputs are cleared so stale values don't
+ * silently linger in a hidden block and reappear on the next open.
+ *
+ * @param {boolean} add — true to add (show), false to remove (hide + clear)
+ */
+function toggleSecondTimeBlock(add) {
+  if (!add) {
+    // Clear block-2 inputs on removal
+    ['timeIn2', 'timeOut2', 'lunchMins2', 'totalHours2'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+  }
+  setSecondBlockVisible(add);
+  calcTotalHours();
+}
+
+
+
+// ── FORM HELPERS ──────────────────────────────────────────────────────────────
+
+/**
+ * Toggles the .checked CSS class on a chip or attach label.
+ * The .checked class applies the visual "selected" state (border + background).
+ * Called by onchange handlers on checkbox inputs.
+ *
+ * @param {string}           labelId — id of the wrapping label element
+ * @param {HTMLInputElement} cb      — the checkbox element
+ */
+function updateChipStyle(labelId, cb) {
+  document.getElementById(labelId).classList.toggle('checked', cb.checked);
+}
+
+/**
+ * Shows or hides the "Other" text input in the Work Type section.
+ * Called specifically by the wtOther checkbox's onchange handler.
+ */
+function toggleWtOther(cb) {
+  const input = document.getElementById('wtOtherText');
+  input.style.display = cb.checked ? 'inline-block' : 'none';
+  if (!cb.checked) input.value = '';
+}
+
+/**
+ * Shows or hides the "Other" text input in the Attachments section.
+ * Mirrors the blank line after "Other" on the original paper form.
+ * Called by the attOther checkbox's onchange handler.
+ */
+function toggleAttOther(cb) {
+  const input = document.getElementById('attOtherText');
+  input.style.display = cb.checked ? 'inline-block' : 'none';
+  if (!cb.checked) input.value = '';
+}
+
+/**
+ * Updates the live character counter below the Work Report textarea.
+ * Shows a warning style at 90% full and an error style at the limit.
+ */
+/**
+ * Auto-expands the Work Report textarea as the user types.
+ * Called on every input event on the textarea.
+ *
+ * TECHNIQUE:
+ * 1. Set height to "auto" — this collapses the box so the browser
+ *    can recalculate scrollHeight (the true content height).
+ * 2. Set height to scrollHeight — the box grows to fit its content.
+ * 3. CSS max-height on #workReport caps growth at 340px, at which
+ *    point overflow-y:auto shows a scrollbar. This happens near
+ *    the character limit, so the user rarely sees the scrollbar.
+ *
+ * Also called in populateForm() so existing text displays at full
+ * height when opening a saved record.
+ *
+ * @param {HTMLTextAreaElement} el — the textarea element
+ */
+function autoResizeTextarea(el) {
+  el.style.height = "auto";           // Reset to get accurate scrollHeight
+  el.style.height = el.scrollHeight + "px"; // Expand to content height
+}
+
+/**
+ * Updates the live character counter below the main Work Report textarea.
+ * Counter turns 'warn' (amber) near the cap and 'over' (red) at the cap.
+ */
+function updateCharCount() {
+  const len     = document.getElementById('workReport').value.length;
+  const counter = document.getElementById('charCounter');
+  counter.textContent = len + ' / ' + MAX_REPORT_CHARS;
+  counter.className   = 'char-counter'
+    + (len >= MAX_REPORT_CHARS     ? ' over' : '')
+    + (len >= MAX_REPORT_CHARS * 0.9 && len < MAX_REPORT_CHARS ? ' warn' : '');
+}
+
+/**
+ * Formats a phone number input to (XXX) XXX-XXXX on blur.
+ * Only formats if the stripped digit count is exactly 10.
+ * Non-US numbers, extensions, and already-formatted numbers are left as-is.
+ *
+ * Examples:
+ *   "5627531234"     → "(562) 753-1234"
+ *   "(562) 753-1234" → "(562) 753-1234"  (already formatted, no change)
+ *   "+15627531234"   → left as-is (11 digits)
+ *   "562-753-1234"   → "(562) 753-1234"  (digits stripped then reformatted)
+ *
+ * @param {HTMLInputElement} input — the phone input element
+ */
+function formatPhone(input) {
+  const digits = input.value.replace(/\D/g, ''); // Strip all non-digit characters
+  if (digits.length === 10) {
+    // Standard US format: (XXX) XXX-XXXX
+    input.value = '(' + digits.slice(0,3) + ') ' + digits.slice(3,6) + '-' + digits.slice(6);
+  }
+  // Non-10-digit strings (international, extensions) are left unchanged
+}
+
+/**
+ * Escapes HTML special characters to prevent XSS when inserting user data
+ * into innerHTML. Always use this function — never interpolate user data
+ * directly into HTML strings.
+ *
+ * @param {*} str — any value; will be converted to string
+ * @returns {string} HTML-safe string
+ */
+function esc(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+
+// ── WORK NOTES CONTINUATION PAGES (v2.3) ──────────────────────────────────────
+//
+// MODEL:
+//   currentRecord.continuationPages is an array of plain strings — one entry
+//   per continuation sheet. The UI in #continuationList mirrors that array:
+//   one editable block per entry. We keep the array authoritative and re-render
+//   the blocks from it whenever it changes (add/remove). Text edits are written
+//   straight back into the array on each keystroke (see the oninput handler in
+//   renderContinuationPages), and re-read from the DOM at save time as a belt-
+//   and-braces capture (readContinuationFromDOM).
+//
+// WHY AN ARRAY EVEN THOUGH MOST RECORDS HAVE NONE:
+//   It costs nothing when empty and lets the tool support any number of
+//   continuation sheets without a data-model change later.
+
+/**
+ * Re-reads every continuation textarea in the DOM back into a fresh array.
+ * Authoritative capture used by saveRecord(). Order follows DOM order.
+ * @returns {string[]} the continuation page texts
+ */
+function readContinuationFromDOM() {
+  return Array.from(document.querySelectorAll('#continuationList textarea'))
+    .map(t => t.value);
+}
+
+/**
+ * Rebuilds the continuation page editor blocks from
+ * currentRecord.continuationPages. Called after add/remove and on open.
+ *
+ * Each block shows: a title ("Work Notes Continuation — Sheet N"), a Remove
+ * button, a textarea capped at MAX_CONT_CHARS, and its own live counter.
+ * The hint beside the Add button reflects how many sheets exist.
+ */
+function renderContinuationPages() {
+  const list = document.getElementById('continuationList');
+  const hint = document.getElementById('contHint');
+  if (!currentRecord || !Array.isArray(currentRecord.continuationPages)) {
+    if (list) list.innerHTML = '';
+    if (hint) hint.textContent = '';
+    return;
+  }
+
+  const pages = currentRecord.continuationPages;
+
+  list.innerHTML = pages.map((text, i) => {
+    const len = (text || '').length;
+    return `
+      <div class="cont-block">
+        <div class="cont-block-head">
+          <span class="cont-block-title">Work Notes Continuation — Sheet ${i + 2}</span>
+          <button type="button" class="btn-inline remove"
+                  onclick="removeContinuationPage(${i})">Remove</button>
+        </div>
+        <textarea maxlength="${MAX_CONT_CHARS}"
+                  placeholder="Continued field notes..."
+                  oninput="onContinuationInput(${i}, this)">${esc(text)}</textarea>
+        <div class="char-counter" id="contCounter${i}">${len} / ${MAX_CONT_CHARS}</div>
+      </div>`;
+  }).join('');
+
+  // Resize each textarea to fit its loaded content.
+  document.querySelectorAll('#continuationList textarea').forEach(t => autoResizeTextarea(t));
+
+  // Update the hint beside the Add button.
+  hint.textContent = pages.length
+    ? pages.length + ' continuation sheet' + (pages.length !== 1 ? 's' : '') + ' added'
+    : '';
+}
+
+/**
+ * Sheet numbering note: continuation sheets are labelled "Sheet 2", "Sheet 3",
+ * ... because the main form is conceptually sheet 1. They are deliberately
+ * NOT folded into the official "Page 1 of ___" field, which the user fills in
+ * by hand to match their paper process.
+ */
+
+/** Live handler: writes a continuation textarea's value into the array and
+ *  refreshes that block's counter. */
+function onContinuationInput(i, el) {
+  if (!currentRecord || !Array.isArray(currentRecord.continuationPages)) return;
+  currentRecord.continuationPages[i] = el.value;
+  autoResizeTextarea(el);
+  const counter = document.getElementById('contCounter' + i);
+  if (counter) counter.textContent = el.value.length + ' / ' + MAX_CONT_CHARS;
+}
+
+/** Adds a new (empty) continuation page and re-renders. */
+function addContinuationPage() {
+  if (!currentRecord) return;
+  if (!Array.isArray(currentRecord.continuationPages)) currentRecord.continuationPages = [];
+  // Sync any in-progress edits before we re-render (avoids losing keystrokes).
+  currentRecord.continuationPages = readContinuationFromDOM();
+  currentRecord.continuationPages.push('');
+  renderContinuationPages();
+  // Focus the newly added textarea for immediate typing.
+  const areas = document.querySelectorAll('#continuationList textarea');
+  if (areas.length) areas[areas.length - 1].focus();
+}
+
+/**
+ * Removes the continuation page at index i (after confirmation if it has text),
+ * then re-renders. Other pages renumber automatically.
+ * @param {number} i — index in the continuationPages array
+ */
+function removeContinuationPage(i) {
+  if (!currentRecord || !Array.isArray(currentRecord.continuationPages)) return;
+  // Capture current edits first so removal doesn't discard unsaved text elsewhere.
+  currentRecord.continuationPages = readContinuationFromDOM();
+  const hasText = (currentRecord.continuationPages[i] || '').trim().length > 0;
+  if (hasText && !confirm('Remove this continuation sheet? Its text will be deleted.')) return;
+  currentRecord.continuationPages.splice(i, 1);
+  renderContinuationPages();
+}
+
+
+// ── GENERATE PDF (pdfmake — the single report-output path) ────────────────────
+//
+// pdfmake builds the report PDF directly in JavaScript. This is the ONLY output
+// path as of v2.5.0 (browser printing was removed): desktop and tablet users get
+// the exact same report. Safari never injects its URL/date/page footer, long
+// Work Reports auto-paginate, and the company footer repeats on every page.
+//
+// The layout lives in build-doc.js (buildDocDefinition), kept as a separate,
+// heavily-commented file so it is easy to maintain. This section only wires
+// the record + setup into it and opens the result.
+
+/**
+ * Maps the stored setup (getSetup) into the shape buildDocDefinition expects.
+ * The footer/header color comes from the currently selected scheme.
+ */
+function pdfSetup() {
+  const s = getSetup();
+  const scheme = SCHEMES[s.scheme] || SCHEMES.navy;
+  return {
+    primary:   scheme.primary,
+    company:   s.company   || '',
+    address:   s.address   || '',
+    cityState: s.cityState || '',
+    phone:     s.phone     || '',
+    email:     s.email     || '',
+    logo:      s.logo      || null   // base64 PNG/JPEG, or null
+  };
+}
+
+/** True only when the vendored pdfmake library and build-doc.js are loaded. */
+function pdfLibReady() {
+  return (typeof window.pdfMake !== 'undefined'
+       && typeof pdfMake.createPdf === 'function'
+       && typeof window.buildDocDefinition === 'function');
+}
+
+/**
+ * Builds and opens the PDF for a given record.
+ *
+ * WORKFLOW (kept exactly as validated in the proof of concept — NO new
+ * platform-detection): we call .open(), which shows the generated PDF. On
+ * desktop it opens in a new tab; on iPad it opens the PDF viewer, from which
+ * the user taps Share -> Save to Files. The suggested filename is carried by
+ * the document's info.title (set inside buildDocDefinition), so there is no
+ * document.title swap here. .open() must run inside the click handler (a user
+ * gesture) for iOS Safari — it does, since these are called directly onclick.
+ *
+ * Page numbering is automatic ("Page X of Y"). External supporting pages
+ * are recorded separately in additionalAttachedPages.
+ */
+function generatePdfFromRecord(r) {
+  if (!r) { showToast('No record to generate'); return; }
+  if (!pdfLibReady()) { showToast('PDF engine not loaded — check pdfmake files'); return; }
+  try {
+    const dd = buildDocDefinition(r, pdfSetup());
+    pdfMake.createPdf(dd).open();
+  } catch (e) {
+    showToast('PDF generation failed');
+    console.error('generatePdf error:', e);
+  }
+}
+
+/** Form-header "Generate PDF": save latest edits silently, then generate. */
+function generatePdfCurrent() {
+  saveRecord(true);                 // capture latest edits (silent — no reminder)
+  generatePdfFromRecord(currentRecord);
+}
+
+/** Dashboard-card "Generate PDF": generate directly from the saved record. */
+function generatePdfById(id) {
+  const rec = getAll().find(r => r.id === id);
+  if (!rec) { showToast('Record not found'); return; }
+  generatePdfFromRecord(rec);
+}
+
+
+
+// ── EXPORT / IMPORT ───────────────────────────────────────────────────────────
+
+/**
+ * Exports all records to a single JSON backup file.
+ *
+ * FILENAME FORMAT:
+ *   dfwr-[JobName]_backup-YYYY-MM-DD-HHMM.json
+ *
+ * The job name portion is determined by:
+ *   - One unique job name across all records → use that name
+ *   - One unique job number (if no single name) → use that number
+ *   - Multiple different jobs → 'multi'
+ *   - No records → no project reference
+ *
+ * The time (HHMM) is appended so multiple exports on the same day
+ * produce unique filenames and don't overwrite each other.
+ */
+function exportBackup() {
+  const all  = getAll();
+  const data = JSON.stringify(all, null, 2);
+
+  // Determine filename project reference
+  const names   = [...new Set(all.map(r => r.jobName).filter(Boolean))];
+  const numbers = [...new Set(all.map(r => r.jobNumber).filter(Boolean))];
+  let ref = names.length === 1   ? names[0]
+          : numbers.length === 1 ? numbers[0]
+          : all.length > 0       ? 'multi'
+          : '';
+  const safeRef = ref
+    ? '-' + ref.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 30)
+    : '';
+
+  const now  = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toTimeString().slice(0, 5).replace(':', '');
+
+  const a = document.createElement('a');
+  a.href     = 'data:application/json;charset=utf-8,' + encodeURIComponent(data);
+  a.download = 'dfwr' + safeRef + '_backup-' + date + '-' + time + '.json';
+  a.click();
+}
+
+/**
+ * Imports records from one or more JSON backup files.
+ * Supports multi-file selection via the 'multiple' attribute on the input.
+ *
+ * MERGE STRATEGY:
+ * Each record has a unique 'id'. If the same id appears in multiple files,
+ * the version with the most recent 'updated' timestamp is kept.
+ * This handles the case where a record was edited on two different devices
+ * and both exports are being merged into one file.
+ *
+ * After merging, the dashboard is refreshed to show the combined result.
+ *
+ * @param {Event} evt — the change event from the file input
+ */
+function importBackup(evt) {
+  const files = Array.from(evt.target.files);
+  if (!files.length) return;
+
+  // Read all files in parallel using Promises.
+  // Each file resolves to an array of records, or rejects with the filename.
+  const readers = files.map(file => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const arr = JSON.parse(e.target.result);
+        if (!Array.isArray(arr)) throw new Error();
+        resolve(arr);
+      } catch {
+        reject(file.name); // Pass filename so we can report which file failed
+      }
+    };
+    reader.readAsText(file);
+  }));
+
+  // Promise.allSettled waits for ALL files regardless of individual failures.
+  // This is better than Promise.all which would abort on the first failure.
+  Promise.allSettled(readers).then(results => {
+    const failed   = results.filter(r => r.status === 'rejected').map(r => r.reason);
+    const incoming = results.filter(r => r.status === 'fulfilled').flatMap(r => r.value);
+
+    if (!incoming.length) {
+      showToast('No valid records found.');
+      return;
+    }
+
+    // Merge: existing records + incoming, deduplicated by id
+    const existing = getAll();
+    const merged   = new Map();
+
+    [...existing, ...incoming].forEach(rec => {
+      const prev = merged.get(rec.id);
+      // Keep the most recently updated version of any duplicate
+      if (!prev || (rec.updated || '') >= (prev.updated || '')) {
+        merged.set(rec.id, rec);
+      }
+    });
+
+    const final = Array.from(merged.values());
+    saveAll(final);
+    renderDashboard();
+
+    // Build a descriptive toast message
+    const added = final.length - existing.length;
+    let msg = 'Imported ' + incoming.length + ' record' + (incoming.length !== 1 ? 's' : '');
+    if (files.length > 1) msg += ' from ' + files.length + ' files';
+    if (added > 0)        msg += ' (' + added + ' new)';
+    if (failed.length)    msg += '. Could not read: ' + failed.join(', ');
+    showToast(msg);
+  });
+
+  evt.target.value = ''; // Reset input so the same file can be re-selected
+}
+
+
+// ── TOAST ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Shows a brief notification at the bottom of the screen.
+ * The toast fades in, stays for 2.5 seconds, then fades out.
+ * Safe to call multiple times — previous toasts are overwritten.
+ *
+ * @param {string} msg — the message to display
+ */
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2500);
+}
+</script>
+
+<!-- ============================================================
+     VENDORED LIBRARIES (v2.5.0 — Production PDF path)
+     Local files only — NO CDN — so the tool still works offline.
+     Pinned pdfmake version and license are recorded in README.md.
+       - pdfmake.min.js : pdfmake 0.2.23 (MIT)  — PDF engine
+       - vfs_fonts.js   : Roboto fonts for pdfmake (auto-registers)
+       - build-doc.js   : buildDocDefinition() — the DFWR PDF layout
+     Loaded AFTER the main script; the Generate PDF buttons call into
+     these only on click, so load order is safe.
+     ============================================================ -->
+<script src="pdfmake.min.js"></script>
+<script src="vfs_fonts.js"></script>
+<script src="build-doc.js"></script>
+</body>
+</html>
