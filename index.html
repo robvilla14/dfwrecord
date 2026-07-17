@@ -3,54 +3,49 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily Field Work Record v2.2</title>
+  <!-- Tab title is intentionally version-free so it reads like a normal app.
+       The version lives in the filename and the header comment below. -->
+  <title>Daily Field Work Record</title>
 
   <!--
   ============================================================
-  DAILY FIELD WORK RECORD — v2.2
+  DAILY FIELD WORK RECORD — v2.5.0  (Production: single PDF output)
   Labor Compliance Solutions
   ------------------------------------------------------------
-  ARCHITECTURE OVERVIEW
-  This tool is a single HTML file with no external dependencies
-  beyond the fonts loaded from Google Fonts. It runs entirely
-  in the browser — no server, no internet required after load.
+  OUTPUT ARCHITECTURE
+  The report is generated as a PDF with pdfmake (vendored locally in
+  pdfmake.min.js + vfs_fonts.js; layout in build-doc.js). This is the ONLY
+  report-output path — desktop and tablet users get the identical PDF. There
+  is no browser printing: Safari can't inject headers/footers, long Work
+  Reports auto-paginate, "Page X of Y" is automatic, and the company footer
+  repeats on every page.
 
-  THREE VIEWS:
-    1. Setup    — configure company profile and color scheme
-    2. Dashboard — list of all saved records, action buttons
-    3. Form      — data entry for a single daily record
+  WHAT WAS REMOVED IN v2.5.0 (browser-print cleanup):
+    window.print() actions; the HTML print-only report layout; manual
+    "Page 1 of X" handling; the blank-pages reminder; Compact Print Mode
+    (Setup card, compactPrint persistence, applyCompactPrint, the --compact-*
+    variables and @media print overrides); Safari character budgets and
+    splitTextByBudget; the shrink-block2 / print-hide workarounds; and the
+    document.title print-filename workaround. Data-entry continuationPages
+    support is PRESERVED — user continuation content is rendered in the PDF.
 
-  Only one view is visible at a time, controlled by toggling
-  the 'active' CSS class on the screen divs.
+  FIELD CHANGE:
+    "Total Pages" was removed. A new "Additional Attached Pages" field
+    (stored as `additionalAttachedPages`, beneath the attachment checkboxes)
+    records external supporting pages; it prints near the Attachments section
+    as "Additional Attached Pages: X" (0 when blank). Older records carrying
+    the legacy `totalPages` value import without error; that value is ignored
+    and never copied into the new field (different meaning).
 
-  DATA STORAGE:
-  All data is saved in the browser's localStorage. Two keys:
-    dfwr_setup   — company profile, logo, color scheme
-    dfwr_records — JSON array of all saved records
-
-  WARNING: Clearing browser data erases all records.
-  Users should export a backup regularly.
-
-  PRINT / PDF:
-  Uses the browser's native print dialog (window.print()).
-  The @media print CSS section controls the print layout.
-  No PDF library is needed — this keeps the code simpler
-  and more understandable for a colleague learning from it.
-
-  COLOR THEMING:
-  The selected color scheme is stored as CSS custom properties
-  (--scheme-primary, --scheme-text) on the document root.
-  Changing these properties instantly cascades to every
-  element that uses var(--scheme-primary) in the CSS — both
-  in the live UI and in the print stylesheet.
-
-  TO ADD DARK MODE IN A FUTURE VERSION:
-  Follow the pattern used in hud11_v1_8.html:
-    1. Add a body.light-mode CSS block with variable overrides
-    2. Add a toggle button in each view header
-    3. Persist preference with localStorage key 'dfwr_lightMode'
+  ------------------------------------------------------------
+  THREE VIEWS: Setup, Dashboard, Form (one visible at a time via the
+  'active' class). DATA STORAGE: localStorage keys dfwr_setup and
+  dfwr_records. Clearing browser data erases records — export backups.
+  COLOR THEMING: the scheme sets CSS custom properties (--scheme-primary,
+  --scheme-text) on :root.
   ============================================================
   -->
+
 
   <style>
     /* ===========================================================
@@ -80,7 +75,7 @@
       --snow:   #E4EAF2;
 
       /* Scheme colors — set by applyScheme() on load and on selection.
-         Default is Michael Baker Navy, the original form's color. */
+         Default is MB Navy, based on the original form color. */
       --scheme-primary: #1B2A47;
       --scheme-text:    #FFFFFF;
 
@@ -172,6 +167,23 @@
       white-space: nowrap;
     }
     .btn-header:hover { background: rgba(255, 255, 255, 0.15); }
+
+    /* Guidance text beneath the output buttons (v2.4.0.1, visual only). */
+    .output-helper {
+      max-width: var(--max-w);
+      margin: 10px auto 0;
+      padding: 10px 14px;
+      background: var(--snow);
+      border: 1px solid var(--frost);
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--mid);
+    }
+    .output-helper strong { color: var(--dark); }
+    .dash-output-helper {
+      margin: 0 0 14px;
+    }
 
     /* ===========================================================
        DASHBOARD VIEW
@@ -512,6 +524,108 @@
     .char-counter.over { color: var(--fail); font-weight: 700; }
 
     /* ===========================================================
+       SECOND TIME BLOCK (v2.3)
+       -----------------------------------------------------------
+       The second clock in/out + lunch row is hidden until the user
+       taps "Add second time block". toggleSecondTimeBlock() flips
+       the .show class. The Grand Total row appears with it.
+    =========================================================== */
+    .time-block-2,
+    .time-grand-row { display: none; }
+    .time-block-2.show,
+    .time-grand-row.show { display: block; }
+
+    /* Small inline link-style button to add/remove the second block */
+    .btn-inline {
+      align-self: flex-start;
+      background: none;
+      border: 1.5px dashed var(--frost);
+      color: var(--mid);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .btn-inline:hover { border-color: var(--mid); color: var(--dark); }
+    .btn-inline.remove { border-color: rgba(220,53,69,0.30); color: var(--fail); }
+    .btn-inline.remove:hover { border-color: var(--fail); }
+
+    /* Thin divider between the two time blocks */
+    .time-divider {
+      border-top: 1px dashed var(--frost);
+      margin: 14px 0 4px;
+    }
+    .time-block-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--steel);
+      margin-bottom: 8px;
+    }
+
+    /* ===========================================================
+       WORK NOTES CONTINUATION PAGES (v2.3)
+       -----------------------------------------------------------
+       Each continuation page is rendered into #continuationList by
+       renderContinuationPages(). One block per continuation page:
+       a labelled textarea (MAX_CONT_CHARS), its own counter, and a
+       Remove button. The "Add Continuation Page" button sits beside
+       the main Work Report counter and appends a new block.
+    =========================================================== */
+    .cont-add-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .cont-block {
+      border: 1.5px solid var(--frost);
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 12px;
+      background: #FAFCFE;
+    }
+    .cont-block-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .cont-block-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--dark);
+    }
+    .cont-block textarea {
+      width: 100%;
+      min-height: 140px;
+      max-height: 420px;
+      overflow-y: auto;
+      resize: none;
+      padding: 9px 12px;
+      border: 2px solid var(--frost);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--dark);
+      font-family: var(--font);
+      background: white;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .cont-block textarea:focus {
+      outline: none;
+      border-color: var(--scheme-primary);
+      box-shadow: 0 0 0 3px rgba(0,0,0,0.07);
+    }
+
+    /* ===========================================================
        LOGO UPLOAD AREA (Setup view)
        -----------------------------------------------------------
        Clicking anywhere in the dashed area triggers the hidden
@@ -760,208 +874,6 @@
       .btn-grid-3    { grid-template-columns: 1fr 1fr; }
     }
 
-    /* ===========================================================
-       PRINT STYLES
-       -----------------------------------------------------------
-       Applied only when the user prints or exports to PDF via
-       the browser's print dialog. These rules reproduce the
-       original Michael Baker Daily Field Work Record layout.
-
-       KEY TECHNIQUES:
-       - Elements with class 'no-print' are hidden on print
-       - Elements with class 'print-only' are visible only on print
-       - The print footer uses var(--scheme-primary) for the band
-         color, which carries through from the setup selection
-       - -webkit-print-color-adjust: exact forces background colors
-         to print (they are suppressed by default in most browsers)
-    =========================================================== */
-    @page {
-	   size: letter;
-	   margin: 0.35in;
-	}
-	@media print {
-      /* Hide all screen navigation and UI chrome */
-      #dashboard, #setup { display: none !important; }
-      .view-header, .no-print, .toast { display: none !important; }
-	  
-	html,
-	body {
-	   width: 100%;
-	   height: auto;
-	}
-
-      /* Reset body for clean print output */
-      body { background: white; margin: 0; padding: 0; }
-
-      /* Make form view visible for print regardless of .active class */
-      #formView { display: block !important; background: white; }
-
-      /* CRITICAL: Hide all screen UI cards — they must not appear on print.
-         The actual print content lives in #printContent, .print-header,
-         and .print-footer which are siblings of .form-body, not inside it. */
-      .form-body { display: none !important; }
-
-      /* Show print-only elements */
-      .print-only { display: block !important; }
-
-      /* ── Print Header ── */
-      .print-header {
-        display: flex !important;
-        align-items: center;
-        justify-content: space-between;
-        padding: 6pt 0 4pt;
-        border-bottom: 2pt solid #000;
-        margin-bottom: 6pt;
-      }
-      .print-logo {
-        max-height: 38pt;
-        max-width: 150pt;
-        object-fit: contain;
-      }
-      .print-title {
-        font-size: 15pt;
-        font-weight: 700;
-        text-align: center;
-        flex: 1;
-      }
-      .print-page { font-size: 10pt; text-align: right; min-width: 60pt; }
-
-      /* ── Print Sections ── */
-      /* Remove screen-only decorations */
-      .card { box-shadow: none !important; border: none !important; margin-bottom: 6pt !important; }
-      .card-header, .card-note { display: none !important; }
-      .card-body { padding: 0 !important; }
-
-      /* ── Print Field Rows ── */
-      .print-row {
-        display: flex !important;
-        gap: 12pt;
-        margin-bottom: 4pt;
-        border-bottom: 1pt solid #bbb;
-        padding-bottom: 1pt;
-        align-items: flex-end;
-      }
-      .print-cell { flex: 1; display: flex; flex-direction: column; }
-      .print-cell.w2 { flex: 2; }
-      .print-cell.w3 { flex: 3; }
-      .pf-label {
-        font-size: 7.5pt;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #444;
-        margin-bottom: 1pt;
-      }
-      .pf-value { font-size: 10pt; min-height: 11pt; }
-
-      /* Cap multi-line personnel rows so they cannot push the report
-         and footer onto a second page. Crew and Construction Crew get
-         up to three printed lines; Visitors and Native American Monitor
-         get up to two printed lines. */
-      #prCrew,
-      #prConstructionCrew {
-        white-space: pre-line;
-        overflow: hidden;
-        max-height: 33pt;
-        line-height: 11pt;
-      }
-
-      #prVisitors,
-      #prNativeMonitor {
-        white-space: pre-line;
-        overflow: hidden;
-        max-height: 22pt;
-        line-height: 11pt;
-      }
-
-      /* Work Type row */
-      .print-worktype {
-        display: flex !important;
-        gap: 14pt;
-        margin-bottom: 4pt;
-        border-bottom: 1pt solid #bbb;
-        padding-bottom: 2pt;
-        flex-wrap: wrap;
-      }
-      .print-wt-item { font-size: 10pt; display: flex; align-items: center; gap: 4pt; }
-      .print-wt-box {
-        width: 10pt; height: 10pt;
-        border: 1pt solid #333;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 8pt;
-      }
-
-      /* Work Report — fixed height with ruled lines so it cannot
-         overflow to a second page. The background-image creates
-         the horizontal ruled lines matching the original form.
-         Height reduced to 220pt for a more reliable one-page PDF. */
-      .print-report-area {
-        min-height: 245pt;
-        max-height: 245pt;
-        overflow: hidden;
-        font-size: 9pt;
-        line-height: 13.5pt;
-        background-image: repeating-linear-gradient(
-          to bottom,
-          transparent 0,
-          transparent 12.25pt,
-          #ccc 12.25pt,
-          #ccc 13.25pt,
-          transparent 13.25pt,
-          transparent 13.5pt
-        );
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-        padding-top: 2pt;
-        padding-bottom: 4pt;
-        border-bottom: 1pt solid #999;
-        margin-bottom: 4pt;
-        word-wrap: break-word;
-      }
-
-      .print-report-area {
-        position: relative;
-      }
-
-      /* Attachments row — normal document flow, appears directly after
-         the work report. NOT position:fixed (that caused a blank page 1). */
-      .print-attach-fixed {
-        display: flex !important;
-        gap: 14pt;
-        align-items: center;
-        font-size: 10pt;
-        flex-wrap: wrap;
-        padding: 4pt 0 2pt;
-        border-top: 1pt solid #bbb;
-        margin-top: 6pt;
-      }
-      .print-attach-label { font-size: 8pt; font-weight: 700; text-transform: uppercase; margin-right: 6pt; }
-
-      /* ── Print Footer ──
-         Normal document flow — no position:fixed (that caused two pages).
-         Appears at the end of printContent after the attachments row.
-         -webkit-print-color-adjust forces background color to print. */
-      .print-footer {
-        background: var(--scheme-primary) !important;
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
-        color: var(--scheme-text) !important;
-        padding: 5pt 14pt;
-        font-size: 8pt;
-        display: flex !important;
-        justify-content: center;
-        align-items: center;
-        gap: 18pt;
-        margin-top: 4pt;
-      }
-    }
-
-    /* These classes are hidden in the browser (only shown on print) */
-    .print-only   { display: none; }
-    .print-footer { display: none; }
-    .print-header { display: none; }
   </style>
 </head>
 <body>
@@ -1031,7 +943,7 @@
 
     <!-- Color Scheme card
          The selected color drives the header, footer, and print footer.
-         Michael Baker Navy (#1B2A47) is the default matching the original form. -->
+         MB Navy (#1B2A47) is the default scheme based on the original form. -->
     <div class="card">
       <div class="card-header">Color Scheme</div>
       <div class="card-note">Sets the color of the app header, record card accents, and the printed form's footer band. Selecting a scheme previews it immediately.</div>
@@ -1103,6 +1015,9 @@
 
     <!-- Records list — rendered by renderDashboard() -->
     <div class="list-label">Saved Records</div>
+    <div class="output-helper dash-output-helper">
+      Generate the report as a PDF for saving, sharing, or printing.
+    </div>
     <div id="recordsList"></div>
 
   </div>
@@ -1112,32 +1027,23 @@
 <!-- ============================================================
      FORM VIEW
      Data entry screen for a single daily field work record.
-     Section order matches the original Michael Baker paper form.
+     Section order follows the original field-report workflow.
      ============================================================ -->
 <div id="formView" class="screen">
 
   <!-- Sticky header — always visible while scrolling.
-       Contains Back, the record name, Save, and Print.
-       .no-print hides this from the printed output. -->
+       Contains Back, the record name, Save, and PDF actions. -->
   <div class="view-header no-print">
     <div class="view-header-inner">
       <button class="btn-header" onclick="goBack()">Back</button>
       <span class="view-title" id="formTitle">New Record</span>
       <button class="btn-header" onclick="saveRecord()">Save</button>
-      <button class="btn-header" onclick="printRecord()">Print</button>
+      <!-- v2.5.0: PDF (pdfmake) is the single report-output path. -->
+      <button class="btn-header" onclick="generatePdfCurrent()">PDF</button>
     </div>
   </div>
-
-  <!-- ── PRINT HEADER (hidden in browser, shown on print) ──────────
-       Reproduces the original form's header: logo left, title center,
-       page number right. Populated by populatePrintView() before printing.
-       ---------------------------------------------------------------- -->
-  <div class="print-header print-only" id="printHeader">
-    <img id="printLogo" class="print-logo" src="" alt="" style="display:none">
-    <div class="print-title">Daily Field Work Record</div>
-    <!-- The total pages value is injected by populatePrintView()
-         from the totalPages field the user filled in on the form. -->
-    <div class="print-page">Page 1 of <span id="prTotalPages">___</span></div>
+  <div class="output-helper">
+    Generate the report as a PDF for saving, sharing, or printing.
   </div>
 
   <div class="form-body">
@@ -1168,14 +1074,6 @@
           <div class="field">
             <label>Work Location</label>
             <input type="text" id="workLocation" placeholder="Site address or GPS description">
-          </div>
-          <div class="field">
-            <label>Total Pages</label>
-            <!-- Small number input — user enters total page count
-                 (e.g., 2 if one supplementary sheet is attached).
-                 Populates 'Page 1 of X' in the print header. -->
-            <input type="number" id="totalPages" placeholder="1" min="1" max="99"
-                   style="max-width:90px">
           </div>
         </div>
       </div>
@@ -1248,6 +1146,7 @@
     <div class="card">
       <div class="card-header">Time</div>
       <div class="card-body">
+        <!-- BLOCK 1 — the primary time row. Always visible. -->
         <div class="field-grid-4">
           <div class="field">
             <label>Time In</label>
@@ -1266,6 +1165,59 @@
             <!-- readonly — never edited by the user directly -->
             <input type="text" id="totalHours" readonly placeholder="Auto">
             <span class="field-hint">Auto-calculated</span>
+          </div>
+        </div>
+
+        <!-- ADD/REMOVE SECOND BLOCK BUTTON (v2.3)
+             Tapping this reveals Block 2 and the Grand Total row.
+             toggleSecondTimeBlock() handles show/hide and recalculation. -->
+        <button type="button" class="btn-inline" id="btnAddTimeBlock"
+                style="margin-top:12px" onclick="toggleSecondTimeBlock(true)">
+          + Add second time block
+        </button>
+
+        <!-- BLOCK 2 — optional. Used for a shift split across midnight
+             (clock out 11:59 PM, clock back in 12:00 AM as a new day) or
+             a long day with a second meal break. Hidden until added; only
+             prints when it has data. Has its OWN lunch field so a 12-hour
+             day can record two breaks. -->
+        <div class="time-block-2" id="timeBlock2">
+          <div class="time-divider"></div>
+          <div class="time-block-label">Second Time Block</div>
+          <div class="field-grid-4">
+            <div class="field">
+              <label>Time In</label>
+              <input type="time" id="timeIn2" onchange="calcTotalHours()">
+            </div>
+            <div class="field">
+              <label>Time Out</label>
+              <input type="time" id="timeOut2" onchange="calcTotalHours()">
+            </div>
+            <div class="field">
+              <label>Lunch <span class="sub-label">(mins)</span></label>
+              <input type="number" id="lunchMins2" placeholder="30" min="0" max="240" oninput="calcTotalHours()">
+            </div>
+            <div class="field">
+              <label>Block 2 Hours</label>
+              <input type="text" id="totalHours2" readonly placeholder="Auto">
+              <span class="field-hint">Auto-calculated</span>
+            </div>
+          </div>
+          <button type="button" class="btn-inline remove" id="btnRemoveTimeBlock"
+                  style="margin-top:12px" onclick="toggleSecondTimeBlock(false)">
+            Remove second time block
+          </button>
+        </div>
+
+        <!-- GRAND TOTAL — sum of whichever blocks have data.
+             Appears only while Block 2 is in use. When a single block is
+             used, the regular Total Hours above is the figure of record. -->
+        <div class="time-grand-row" id="timeGrandRow">
+          <div class="time-divider"></div>
+          <div class="field" style="max-width:220px">
+            <label>Grand Total Hours <span class="sub-label">(both blocks)</span></label>
+            <input type="text" id="totalHoursGrand" readonly placeholder="Auto">
+            <span class="field-hint">Block 1 + Block 2, auto-calculated</span>
           </div>
         </div>
       </div>
@@ -1317,8 +1269,8 @@
     <!-- ── SECTION 7: Work Report ────────────────────────────────────
          Free text narrative. The maxlength attribute prevents typing
          beyond 2,200 characters. The oninput handler updates the live
-         character counter. On print, the area has a fixed max-height
-         to prevent the report from overflowing to a second page.
+         character counter. pdfmake flows saved narrative content across
+         generated pages automatically.
          ---------------------------------------------------------------- -->
     <div class="card">
       <div class="card-header">Work Report</div>
@@ -1327,11 +1279,27 @@
         <div class="field">
           <!-- rows="10" is overridden by the #workReport CSS min-height.
                autoResizeTextarea() expands the box as the user types.
-               updateCharCount() refreshes the character counter below. -->
+               updateCharCount() refreshes the character counter below and
+               updates the live character counter as content is entered. -->
           <textarea id="workReport" rows="10" maxlength="2200"
             placeholder="Enter your field observations and work summary..."
             oninput="autoResizeTextarea(this); updateCharCount()"></textarea>
           <div class="char-counter" id="charCounter">0 / 2200</div>
+
+          <!-- Add Continuation Page (v2.3) — permanent button. Always
+               available, not gated on the character count, so the user is
+               in control. Appends a new continuation block to the list. -->
+          <div class="cont-add-row">
+            <span class="field-hint" id="contHint"></span>
+            <button type="button" class="btn-inline" onclick="addContinuationPage()">
+              + Add Continuation Page
+            </button>
+          </div>
+
+          <!-- Continuation blocks are rendered here by renderContinuationPages().
+               Each block is a labelled textarea (up to MAX_CONT_CHARS), its own
+               counter, and a Remove button. -->
+          <div id="continuationList"></div>
         </div>
       </div>
     </div>
@@ -1371,12 +1339,21 @@
                Mirrors the blank line after "Other" on the original paper form. -->
           <input type="text" id="attOtherText" placeholder="Specify...">
         </div>
+
+        <!-- v2.5.0: number of EXTERNAL supporting pages submitted with this
+             report. Shown in the generated PDF near the Attachments section.
+             pdfmake auto-numbers the report itself, so this is separate. -->
+        <div class="field" style="margin-top:12px">
+          <label>Additional Attached Pages</label>
+          <input type="number" id="additionalAttachedPages" placeholder="0" min="0" max="99"
+                 style="max-width:110px">
+          <span class="field-hint">Enter the number of external pages submitted with this report, such as photo logs, maps, GPS logs, or other supporting documents. Do not include the generated PDF pages.</span>
+        </div>
       </div>
     </div>
 
     <!-- Bottom save button — same action as the header Save button.
-         Provides convenience without scrolling back to the top.
-         .no-print hides it from the printed output. -->
+         Provides convenience without scrolling back to the top. -->
     <!-- This bottom Save button saves AND returns to the dashboard.
          The header Save button (above) saves in place for mid-entry saves.
          saveAndReturn() calls saveRecord() then navigates back after a
@@ -1385,106 +1362,6 @@
 
   </div><!-- /form-body -->
 
-  <!-- ── PRINT FIELD ROWS (hidden in browser, shown on print) ──────
-       DOM ORDER (important for correct print output):
-         1. printContent  — all data rows + work report (normal flow)
-         2. printAttachRow — attachments row (normal flow, after content)
-         3. printFooter   — footer band (normal flow, always last)
-       All three are position:static so nothing creates a phantom page.
-       ---------------------------------------------------------------- -->
-<div class="print-only" id="printContent" style="padding:0">
-
-    <!-- Row 1: Job Number | Job Name | Date -->
-    <div class="print-row">
-      <div class="print-cell"><div class="pf-label">Job Number</div><div class="pf-value" id="prJobNumber"></div></div>
-      <div class="print-cell w2"><div class="pf-label">Job Name</div><div class="pf-value" id="prJobName"></div></div>
-      <div class="print-cell"><div class="pf-label">Date</div><div class="pf-value" id="prDate"></div></div>
-    </div>
-
-    <!-- Row 2: Work Location -->
-    <div class="print-row">
-      <div class="print-cell w3"><div class="pf-label">Work Location</div><div class="pf-value" id="prWorkLocation"></div></div>
-    </div>
-
-    <!-- Row 3: Work Type checkboxes -->
-    <div class="print-worktype" id="prWorkType"></div>
-
-    <!-- Row 4: Your Name -->
-    <div class="print-row">
-      <div class="print-cell w3"><div class="pf-label">Your Name</div><div class="pf-value" id="prYourName"></div></div>
-    </div>
-
-    <!-- Row 5: Crew -->
-    <div class="print-row">
-      <div class="print-cell w3">
-        <div class="pf-label">Crew (name and affiliation)</div>
-        <div class="pf-value" id="prCrew" style="white-space:pre-line"></div>
-      </div>
-    </div>
-
-    <!-- Row 6: Time In | Time Out | Lunch | Total Hours -->
-    <div class="print-row">
-      <div class="print-cell"><div class="pf-label">Time In</div><div class="pf-value" id="prTimeIn"></div></div>
-      <div class="print-cell"><div class="pf-label">Time Out</div><div class="pf-value" id="prTimeOut"></div></div>
-      <div class="print-cell"><div class="pf-label">Lunch</div><div class="pf-value" id="prLunch"></div></div>
-      <div class="print-cell"><div class="pf-label">Total Hours</div><div class="pf-value" id="prTotalHours"></div></div>
-    </div>
-
-    <!-- Row 7: Visitors -->
-    <div class="print-row">
-      <div class="print-cell w3">
-        <div class="pf-label">Visitors (name and affiliation)</div>
-        <div class="pf-value" id="prVisitors" style="white-space:pre-line"></div>
-      </div>
-    </div>
-
-    <!-- Row 8: Native American Monitor -->
-    <div class="print-row">
-      <div class="print-cell w3">
-        <div class="pf-label">Native American Monitor (name and affiliation)</div>
-        <div class="pf-value" id="prNativeMonitor" style="white-space:pre-line"></div>
-      </div>
-    </div>
-
-    <!-- Row 9: Construction Crew -->
-    <div class="print-row">
-      <div class="print-cell w3">
-        <div class="pf-label">Construction Crew (name and affiliation)</div>
-        <div class="pf-value" id="prConstructionCrew" style="white-space:pre-line"></div>
-      </div>
-    </div>
-
-    <!-- Row 10: Vehicle | Start Location | Total Miles -->
-    <div class="print-row">
-      <div class="print-cell"><div class="pf-label">Vehicle</div><div class="pf-value" id="prVehicle"></div></div>
-      <div class="print-cell"><div class="pf-label">Start Location</div><div class="pf-value" id="prStartLocation"></div></div>
-      <div class="print-cell"><div class="pf-label">Total Miles</div><div class="pf-value" id="prTotalMiles"></div></div>
-    </div>
-
-    <!-- Row 11: Work Report label -->
-    <div style="margin-bottom:4pt">
-      <span class="pf-label">Work Report</span>
-      <span style="font-size:7pt;color:#666"> (Methods, Work Completed, Stops/Starts, Discoveries, Observations, Soils, Landforms/Topography, Vegetation, Disturbances, etc.)</span>
-    </div>
-
-    <!-- Work Report text in a fixed-height ruled area -->
-    <div class="print-report-area" id="prWorkReport"></div>
-
-
-  </div><!-- /printContent -->
-
-  <!-- Attachments row — in normal document flow after the work report.
-       Populated by populatePrintView(). Hidden in browser (.print-only). -->
-  <div class="print-attach-fixed print-only" id="printAttachRow"></div>
-
-  <!-- Footer band — always last in document flow.
-       Company contact info in the selected scheme color.
-       Populated by populatePrintView(). Hidden in browser (.print-only). -->
-  <div class="print-footer print-only" id="printFooter">
-    <span id="pfAddress"></span>
-    <span id="pfPhone"></span>
-    <span id="pfEmail"></span>
-  </div>
 
 </div><!-- /formView -->
 
@@ -1502,8 +1379,8 @@
 //   2. User taps "New Record" → blankRecord() creates empty data object
 //   3. User fills the form → each field's oninput writes to currentRecord
 //   4. User taps Save → saveRecord() writes currentRecord to localStorage
-//   5. User taps Print → populatePrintView() fills print-only elements
-//      → window.print() opens the browser's print dialog
+//   5. User taps PDF → buildDocDefinition() creates the document
+//      → pdfmake opens the generated PDF
 //
 // NOTE: There is no server. All data lives in the browser's localStorage.
 // Clearing browser data erases everything. Advise users to export regularly.
@@ -1517,10 +1394,13 @@
 const STORE_KEY = 'dfwr_records'; // Array of saved daily field work records
 const SETUP_KEY = 'dfwr_setup';   // Company profile and color scheme
 
-// Maximum characters in the Work Report field.
-// Set to 2200 to better use the available ruled work report lines while the fixed 220pt print area keeps the form to one page.
-// Users needing more space should check "Supplementary Sheets" in attachments.
+// Maximum characters in the Work Report field (data-entry limit).
 const MAX_REPORT_CHARS = 2200;
+
+// Maximum characters per Work Notes continuation page (data-entry limit).
+// Continuation content is authored by the user in the form and rendered by
+// pdfmake in the generated PDF.
+const MAX_CONT_CHARS = 5000;
 
 // ── COLOR SCHEMES ────────────────────────────────────────────────────────────
 // Each scheme has:
@@ -1528,12 +1408,12 @@ const MAX_REPORT_CHARS = 2200;
 //   text    — text color on top of the primary (always white or black)
 //   label   — display name shown in the scheme selector
 //
-// The default is 'navy' which matches the Michael Baker International form.
+// The default is 'navy' (MB Navy), based on the original form color.
 //
 // TO ADD A NEW SCHEME: add a new key with primary/text/label values.
 // The key string is what gets saved in localStorage as setup.scheme.
 const SCHEMES = {
-  navy:     { primary: '#1B2A47', text: '#FFFFFF', label: 'MB' },
+  navy:     { primary: '#1B2A47', text: '#FFFFFF', label: 'MB Navy' },
   slate:    { primary: '#1E3A5F', text: '#FFFFFF', label: 'Slate Blue'    },
   charcoal: { primary: '#2C2C2E', text: '#FFFFFF', label: 'Charcoal'      },
   forest:   { primary: '#1A3C28', text: '#FFFFFF', label: 'Forest'        },
@@ -1561,7 +1441,7 @@ let currentScheme = 'navy';
 //   2. Add the HTML input in the form view above
 //   3. Add it to populateForm() to load saved values
 //   4. Add it to saveRecord() to capture the value on save
-//   5. Add it to populatePrintView() to display it on print
+//   5. Add it to build-doc.js if it must appear in the generated PDF
 function blankRecord() {
   return {
     // ── System fields (auto-managed) ──
@@ -1569,10 +1449,17 @@ function blankRecord() {
     created: new Date().toISOString(),        // ISO timestamp when created
     updated: new Date().toISOString(),        // ISO timestamp of last save
 
-    // ── Page Count ──
-    // Maps to the 'Page 1 of ___' field in the print header.
-    // The user enters the total number of pages (including attachments)
-    // so the printed form shows 'Page 1 of 2' rather than 'Page 1 of ___'.
+    // ── Attached pages ──
+    // Number of EXTERNAL supporting pages submitted with the report (photo
+    // logs, maps, GPS logs, etc.). Shown in the generated PDF near the
+    // Attachments section. Blank/0 by default. pdfmake auto-numbers the report
+    // itself ("Page X of Y"), so this is NOT the report's own page count.
+    additionalAttachedPages: '',
+    // LEGACY: older records may carry a `totalPages` value from earlier
+    // versions. It represented a different thing (manual report page count)
+    // and is intentionally IGNORED — never copied into additionalAttachedPages.
+    // Kept here as '' so the field name still exists; old values on imported
+    // records are preserved as-is and simply not used.
     totalPages: '',
 
     // ── Job Information ──
@@ -1592,11 +1479,25 @@ function blankRecord() {
     yourName: '',
     crew:     '', // Multi-line textarea
 
-    // ── Time ──
+    // ── Time (Block 1 — the primary clock in/out) ──
     timeIn:     '', // 'HH:MM' 24-hour format (from <input type="time">)
     timeOut:    '', // 'HH:MM' 24-hour format
     lunchMins:  '', // Number of minutes for lunch break
     totalHours: '', // Read-only, computed by calcTotalHours()
+
+    // ── Time (Block 2 — optional second clock in/out, v2.3) ──
+    // Used for a shift split across midnight, or a long day with a second
+    // meal break. Empty on most records. Has its own lunch field.
+    timeIn2:     '',
+    timeOut2:    '',
+    lunchMins2:  '',
+    totalHours2: '',
+    useBlock2:   false, // true once the user adds the second block
+
+    // Grand total of whichever blocks have data (v2.3). When only Block 1
+    // is used this equals totalHours; the form shows the grand total only
+    // while Block 2 is active.
+    totalHoursGrand: '',
 
     // ── Additional Personnel (multi-line textareas) ──
     visitors:         '',
@@ -1610,6 +1511,13 @@ function blankRecord() {
 
     // ── Work Report ──
     workReport: '', // Free text, max MAX_REPORT_CHARS characters
+
+    // ── Work Notes Continuation Pages (v2.3) ──
+    // An array of plain strings, one per continuation sheet. Empty on most
+    // records. Stored as an array from the start so any number of pages is
+    // supported. Old records that predate this field simply load as []
+    // (handled in populateForm / openRecord normalization).
+    continuationPages: [],
 
     // ── Attachments (checkbox booleans — indicate physical documents only) ──
     attPhoto:     false,
@@ -1787,7 +1695,6 @@ function saveSetup() {
   closeSetup();
 }
 
-
 // ── LOGO UPLOAD ───────────────────────────────────────────────────────────────
 
 /**
@@ -1933,7 +1840,7 @@ function renderDashboard() {
       </div>
       <div class="rc-actions">
         <button class="btn-card open"   onclick="openRecord('${r.id}')">Open</button>
-        <button class="btn-card"        onclick="printById('${r.id}')">Print</button>
+        <button class="btn-card"        onclick="generatePdfById('${r.id}')">PDF</button>
         <button class="btn-card del"    onclick="deleteRecord('${r.id}')">Delete</button>
       </div>
     </div>
@@ -2048,7 +1955,9 @@ function populateForm(r) {
   v('jobName',      r.jobName);
   v('recordDate',   r.date || new Date().toISOString().slice(0, 10));
   v('workLocation', r.workLocation);
-  v('totalPages',   r.totalPages);
+  // Load the external-pages field. No fallback to legacy totalPages (different
+  // meaning); old records simply show blank/0.
+  v('additionalAttachedPages', r.additionalAttachedPages);
 
   // Work Type
   chk('wtSurvey',  r.wtSurvey,  'lbSurvey');
@@ -2062,11 +1971,22 @@ function populateForm(r) {
   v('yourName', r.yourName);
   v('crew',     r.crew);
 
-  // Time
+  // Time (Block 1)
   v('timeIn',     r.timeIn);
   v('timeOut',    r.timeOut);
   v('lunchMins',  r.lunchMins);
   v('totalHours', r.totalHours);
+
+  // Time (Block 2, v2.3) — normalize older records that lack these fields.
+  v('timeIn2',     r.timeIn2);
+  v('timeOut2',    r.timeOut2);
+  v('lunchMins2',  r.lunchMins2);
+  v('totalHours2', r.totalHours2);
+  // Show the second block if the record uses it OR has any block-2 data.
+  const hasBlock2Data = !!(r.timeIn2 || r.timeOut2 || r.lunchMins2);
+  setSecondBlockVisible(r.useBlock2 || hasBlock2Data);
+  // Recompute totals from the loaded values (also fills the grand total).
+  calcTotalHours();
 
   // Additional Personnel
   v('visitors',         r.visitors);
@@ -2084,6 +2004,11 @@ function populateForm(r) {
   const wrEl = document.getElementById('workReport');
   if (wrEl) autoResizeTextarea(wrEl);
   updateCharCount();
+
+  // Work Notes Continuation Pages (v2.3)
+  // Normalize: older records have no continuationPages field — treat as [].
+  if (!Array.isArray(r.continuationPages)) r.continuationPages = [];
+  renderContinuationPages();
 
   // Attachments
   chk('attPhoto', r.attPhoto, 'lcPhoto');
@@ -2139,7 +2064,9 @@ function saveRecord(silent = false) {
   currentRecord.jobName      = g('jobName');
   currentRecord.date         = g('recordDate');
   currentRecord.workLocation = g('workLocation');
-  currentRecord.totalPages   = g('totalPages');
+  // Capture external attached pages. We do NOT write currentRecord.totalPages
+  // (legacy): it keeps whatever an imported record had, and is never used.
+  currentRecord.additionalAttachedPages = g('additionalAttachedPages');
 
   currentRecord.wtSurvey    = document.getElementById('wtSurvey').checked;
   currentRecord.wtArch      = document.getElementById('wtArch').checked;
@@ -2155,6 +2082,14 @@ function saveRecord(silent = false) {
   currentRecord.lunchMins  = g('lunchMins');
   currentRecord.totalHours = g('totalHours');
 
+  // Second time block (v2.3) — capture whether it's in use and its values.
+  currentRecord.useBlock2   = document.getElementById('timeBlock2').classList.contains('show');
+  currentRecord.timeIn2     = g('timeIn2');
+  currentRecord.timeOut2    = g('timeOut2');
+  currentRecord.lunchMins2  = g('lunchMins2');
+  currentRecord.totalHours2 = g('totalHours2');
+  currentRecord.totalHoursGrand = g('totalHoursGrand');
+
   currentRecord.visitors         = g('visitors');
   currentRecord.nativeMonitor    = g('nativeMonitor');
   currentRecord.constructionCrew = g('constructionCrew');
@@ -2164,6 +2099,12 @@ function saveRecord(silent = false) {
   currentRecord.totalMiles    = g('totalMiles');
 
   currentRecord.workReport = g('workReport');
+
+  // Work Notes Continuation Pages (v2.3) — read each textarea back into the
+  // array. We keep the array in sync on input, but re-reading here is the
+  // authoritative capture at save time. Trailing fully-blank pages are kept
+  // as the user left them; blank pages simply won't print.
+  currentRecord.continuationPages = readContinuationFromDOM();
 
   currentRecord.attPhoto = document.getElementById('attPhoto').checked;
   currentRecord.attMap   = document.getElementById('attMap').checked;
@@ -2211,54 +2152,114 @@ function g(id) {
  * so users can save mid-entry without losing their place in the form.
  */
 function saveAndReturn() {
-  saveRecord();                        // Save all current form data
+  saveRecord();                        // Save all current form data (persisted)
   setTimeout(() => goBack(), 700);     // Brief pause so toast is visible
 }
 
 // ── TIME CALCULATION ──────────────────────────────────────────────────────────
 
 /**
- * Automatically calculates Total Hours from Time In, Time Out, and Lunch.
- * Called by the onchange handlers on all three time inputs.
+ * Computes decimal hours for ONE time block from its three inputs.
  *
  * HOW IT WORKS:
  * <input type="time"> always returns time in 24-hour HH:MM format internally,
  * regardless of how it displays. This makes the arithmetic straightforward:
+ *   1. Parse "HH:MM" strings into integers (hours and minutes)
+ *   2. Convert both times to total minutes since midnight
+ *   3. If Time Out <= Time In, add 24*60 to handle overnight shifts
+ *   4. Subtract Time In and Lunch from Time Out
+ *   5. Divide remaining minutes by 60 for decimal hours
  *
- * 1. Parse "HH:MM" strings into integers (hours and minutes)
- * 2. Convert both times to total minutes since midnight
- * 3. If Time Out <= Time In, add 24*60 to handle overnight shifts
- * 4. Subtract Time In and Lunch from Time Out
- * 5. Divide remaining minutes by 60 for decimal hours
+ * EXAMPLE: In 08:00, Out 16:30, Lunch 30 → (990 - 480 - 30) / 60 = 8.00 hrs
  *
- * EXAMPLE: Time In 08:00, Time Out 16:30, Lunch 30 min
- *   inMins  = 8*60 + 0  = 480
- *   outMins = 16*60 + 30 = 990
- *   total   = (990 - 480 - 30) / 60 = 8.00 hours
+ * @param {string} inId    — element id of the Time In input
+ * @param {string} outId   — element id of the Time Out input
+ * @param {string} lunchId — element id of the Lunch (minutes) input
+ * @returns {number|null} decimal hours, or null if the block is incomplete
+ *          (so callers can tell "blank block" apart from "0 hours")
  */
-function calcTotalHours() {
-  const timeIn  = document.getElementById('timeIn').value;
-  const timeOut = document.getElementById('timeOut').value;
-  const lunch   = parseFloat(document.getElementById('lunchMins').value) || 0;
-  const outEl   = document.getElementById('totalHours');
+function calcBlockHours(inId, outId, lunchId) {
+  const timeIn  = document.getElementById(inId).value;
+  const timeOut = document.getElementById(outId).value;
+  const lunch   = parseFloat(document.getElementById(lunchId).value) || 0;
 
-  // Cannot calculate if either time is missing
-  if (!timeIn || !timeOut) { outEl.value = ''; return; }
+  // Incomplete block (missing in or out) → null, so it's ignored in the
+  // grand total rather than counted as zero.
+  if (!timeIn || !timeOut) return null;
 
-  // Parse HH:MM into integer hours and minutes
   const [inH,  inM]  = timeIn.split(':').map(Number);
   const [outH, outM] = timeOut.split(':').map(Number);
 
   let inMins  = inH  * 60 + inM;
   let outMins = outH * 60 + outM;
 
-  // Handle overnight: if out time is before (or equal to) in time, it's next day
+  // Handle overnight: if out time is before (or equal to) in time, next day.
   if (outMins <= inMins) outMins += 24 * 60;
 
   const worked = outMins - inMins - lunch;
-
-  outEl.value = worked > 0 ? (worked / 60).toFixed(2) : '0.00';
+  return worked > 0 ? worked / 60 : 0;
 }
+
+/**
+ * Recalculates both time blocks and the grand total.
+ * Wired to the onchange/oninput handlers on every time input (both blocks).
+ *
+ * - Block 1 total → #totalHours
+ * - Block 2 total → #totalHours2 (only meaningful when the block is shown)
+ * - Grand total   → #totalHoursGrand = sum of whichever blocks have data
+ *
+ * A blank block contributes nothing. If only Block 1 is filled, the grand
+ * total equals Block 1 — but the grand-total ROW is only shown to the user
+ * while Block 2 is active (toggleSecondTimeBlock controls that).
+ *
+ * NOTE: the function name stays calcTotalHours() because it is referenced by
+ * many inline handlers; it now does the full multi-block calculation.
+ */
+function calcTotalHours() {
+  const b1 = calcBlockHours('timeIn',  'timeOut',  'lunchMins');
+  const b2 = calcBlockHours('timeIn2', 'timeOut2', 'lunchMins2');
+
+  // Fill each block's own readonly field (blank when that block is empty).
+  document.getElementById('totalHours').value  = (b1 === null) ? '' : b1.toFixed(2);
+  document.getElementById('totalHours2').value = (b2 === null) ? '' : b2.toFixed(2);
+
+  // Grand total = sum of the blocks that actually have data.
+  const grand = (b1 || 0) + (b2 || 0);
+  const anyData = (b1 !== null) || (b2 !== null);
+  document.getElementById('totalHoursGrand').value = anyData ? grand.toFixed(2) : '';
+}
+
+/**
+ * Shows or hides the second time block and the grand-total row (v2.3).
+ * Pure UI state — also used by populateForm() to restore the saved state.
+ *
+ * @param {boolean} visible — true to show Block 2 + grand total
+ */
+function setSecondBlockVisible(visible) {
+  document.getElementById('timeBlock2').classList.toggle('show', visible);
+  document.getElementById('timeGrandRow').classList.toggle('show', visible);
+  // The "+ Add second time block" button is only useful while hidden.
+  document.getElementById('btnAddTimeBlock').style.display = visible ? 'none' : 'inline-block';
+}
+
+/**
+ * Toggle handler for the add/remove second time block buttons.
+ * When removing, the block's inputs are cleared so stale values don't
+ * silently linger in a hidden block and reappear on the next open.
+ *
+ * @param {boolean} add — true to add (show), false to remove (hide + clear)
+ */
+function toggleSecondTimeBlock(add) {
+  if (!add) {
+    // Clear block-2 inputs on removal
+    ['timeIn2', 'timeOut2', 'lunchMins2', 'totalHours2'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+  }
+  setSecondBlockVisible(add);
+  calcTotalHours();
+}
+
 
 
 // ── FORM HELPERS ──────────────────────────────────────────────────────────────
@@ -2322,6 +2323,10 @@ function autoResizeTextarea(el) {
   el.style.height = el.scrollHeight + "px"; // Expand to content height
 }
 
+/**
+ * Updates the live character counter below the main Work Report textarea.
+ * Counter turns 'warn' (amber) near the cap and 'over' (red) at the cap.
+ */
 function updateCharCount() {
   const len     = document.getElementById('workReport').value.length;
   const counter = document.getElementById('charCounter');
@@ -2370,143 +2375,196 @@ function esc(str) {
 }
 
 
-// ── PRINT / PDF ───────────────────────────────────────────────────────────────
+// ── WORK NOTES CONTINUATION PAGES (v2.3) ──────────────────────────────────────
+//
+// MODEL:
+//   currentRecord.continuationPages is an array of plain strings — one entry
+//   per continuation sheet. The UI in #continuationList mirrors that array:
+//   one editable block per entry. We keep the array authoritative and re-render
+//   the blocks from it whenever it changes (add/remove). Text edits are written
+//   straight back into the array on each keystroke (see the oninput handler in
+//   renderContinuationPages), and re-read from the DOM at save time as a belt-
+//   and-braces capture (readContinuationFromDOM).
+//
+// WHY AN ARRAY EVEN THOUGH MOST RECORDS HAVE NONE:
+//   It costs nothing when empty and lets the tool support any number of
+//   continuation sheets without a data-model change later.
 
 /**
- * Saves the current record, fills the print layout, and opens the print dialog.
- * The browser converts to PDF if the user selects "Save as PDF" in the dialog.
+ * Re-reads every continuation textarea in the DOM back into a fresh array.
+ * Authoritative capture used by saveRecord(). Order follows DOM order.
+ * @returns {string[]} the continuation page texts
  */
-function printRecord() {
-  saveRecord(true);
-  if (currentRecord) {
-    populatePrintView(currentRecord);
-    window.print();
-  }
+function readContinuationFromDOM() {
+  return Array.from(document.querySelectorAll('#continuationList textarea'))
+    .map(t => t.value);
 }
 
 /**
- * Prints a specific record by ID without opening the form for editing.
- * Used by the Print button on dashboard record cards.
+ * Rebuilds the continuation page editor blocks from
+ * currentRecord.continuationPages. Called after add/remove and on open.
  *
- * @param {string} id — record id to print
+ * Each block shows: a title ("Work Notes Continuation — Sheet N"), a Remove
+ * button, a textarea capped at MAX_CONT_CHARS, and its own live counter.
+ * The hint beside the Add button reflects how many sheets exist.
  */
-function printById(id) {
+function renderContinuationPages() {
+  const list = document.getElementById('continuationList');
+  const hint = document.getElementById('contHint');
+  if (!currentRecord || !Array.isArray(currentRecord.continuationPages)) {
+    if (list) list.innerHTML = '';
+    if (hint) hint.textContent = '';
+    return;
+  }
+
+  const pages = currentRecord.continuationPages;
+
+  list.innerHTML = pages.map((text, i) => {
+    const len = (text || '').length;
+    return `
+      <div class="cont-block">
+        <div class="cont-block-head">
+          <span class="cont-block-title">Work Notes Continuation — Sheet ${i + 2}</span>
+          <button type="button" class="btn-inline remove"
+                  onclick="removeContinuationPage(${i})">Remove</button>
+        </div>
+        <textarea maxlength="${MAX_CONT_CHARS}"
+                  placeholder="Continued field notes..."
+                  oninput="onContinuationInput(${i}, this)">${esc(text)}</textarea>
+        <div class="char-counter" id="contCounter${i}">${len} / ${MAX_CONT_CHARS}</div>
+      </div>`;
+  }).join('');
+
+  // Resize each textarea to fit its loaded content.
+  document.querySelectorAll('#continuationList textarea').forEach(t => autoResizeTextarea(t));
+
+  // Update the hint beside the Add button.
+  hint.textContent = pages.length
+    ? pages.length + ' continuation sheet' + (pages.length !== 1 ? 's' : '') + ' added'
+    : '';
+}
+
+/**
+ * Sheet numbering note: continuation sheets are labelled "Sheet 2", "Sheet 3",
+ * ... because the main form is conceptually sheet 1. They are deliberately
+ * NOT folded into the official "Page 1 of ___" field, which the user fills in
+ * by hand to match their paper process.
+ */
+
+/** Live handler: writes a continuation textarea's value into the array and
+ *  refreshes that block's counter. */
+function onContinuationInput(i, el) {
+  if (!currentRecord || !Array.isArray(currentRecord.continuationPages)) return;
+  currentRecord.continuationPages[i] = el.value;
+  autoResizeTextarea(el);
+  const counter = document.getElementById('contCounter' + i);
+  if (counter) counter.textContent = el.value.length + ' / ' + MAX_CONT_CHARS;
+}
+
+/** Adds a new (empty) continuation page and re-renders. */
+function addContinuationPage() {
+  if (!currentRecord) return;
+  if (!Array.isArray(currentRecord.continuationPages)) currentRecord.continuationPages = [];
+  // Sync any in-progress edits before we re-render (avoids losing keystrokes).
+  currentRecord.continuationPages = readContinuationFromDOM();
+  currentRecord.continuationPages.push('');
+  renderContinuationPages();
+  // Focus the newly added textarea for immediate typing.
+  const areas = document.querySelectorAll('#continuationList textarea');
+  if (areas.length) areas[areas.length - 1].focus();
+}
+
+/**
+ * Removes the continuation page at index i (after confirmation if it has text),
+ * then re-renders. Other pages renumber automatically.
+ * @param {number} i — index in the continuationPages array
+ */
+function removeContinuationPage(i) {
+  if (!currentRecord || !Array.isArray(currentRecord.continuationPages)) return;
+  // Capture current edits first so removal doesn't discard unsaved text elsewhere.
+  currentRecord.continuationPages = readContinuationFromDOM();
+  const hasText = (currentRecord.continuationPages[i] || '').trim().length > 0;
+  if (hasText && !confirm('Remove this continuation sheet? Its text will be deleted.')) return;
+  currentRecord.continuationPages.splice(i, 1);
+  renderContinuationPages();
+}
+
+
+// ── GENERATE PDF (pdfmake — the single report-output path) ────────────────────
+//
+// pdfmake builds the report PDF directly in JavaScript. This is the ONLY output
+// path as of v2.5.0 (browser printing was removed): desktop and tablet users get
+// the exact same report. Safari never injects its URL/date/page footer, long
+// Work Reports auto-paginate, and the company footer repeats on every page.
+//
+// The layout lives in build-doc.js (buildDocDefinition), kept as a separate,
+// heavily-commented file so it is easy to maintain. This section only wires
+// the record + setup into it and opens the result.
+
+/**
+ * Maps the stored setup (getSetup) into the shape buildDocDefinition expects.
+ * The footer/header color comes from the currently selected scheme.
+ */
+function pdfSetup() {
+  const s = getSetup();
+  const scheme = SCHEMES[s.scheme] || SCHEMES.navy;
+  return {
+    primary:   scheme.primary,
+    company:   s.company   || '',
+    address:   s.address   || '',
+    cityState: s.cityState || '',
+    phone:     s.phone     || '',
+    email:     s.email     || '',
+    logo:      s.logo      || null   // base64 PNG/JPEG, or null
+  };
+}
+
+/** True only when the vendored pdfmake library and build-doc.js are loaded. */
+function pdfLibReady() {
+  return (typeof window.pdfMake !== 'undefined'
+       && typeof pdfMake.createPdf === 'function'
+       && typeof window.buildDocDefinition === 'function');
+}
+
+/**
+ * Builds and opens the PDF for a given record.
+ *
+ * WORKFLOW (kept exactly as validated in the proof of concept — NO new
+ * platform-detection): we call .open(), which shows the generated PDF. On
+ * desktop it opens in a new tab; on iPad it opens the PDF viewer, from which
+ * the user taps Share -> Save to Files. The suggested filename is carried by
+ * the document's info.title (set inside buildDocDefinition), so there is no
+ * document.title swap here. .open() must run inside the click handler (a user
+ * gesture) for iOS Safari — it does, since these are called directly onclick.
+ *
+ * Page numbering is automatic ("Page X of Y"). External supporting pages
+ * are recorded separately in additionalAttachedPages.
+ */
+function generatePdfFromRecord(r) {
+  if (!r) { showToast('No record to generate'); return; }
+  if (!pdfLibReady()) { showToast('PDF engine not loaded — check pdfmake files'); return; }
+  try {
+    const dd = buildDocDefinition(r, pdfSetup());
+    pdfMake.createPdf(dd).open();
+  } catch (e) {
+    showToast('PDF generation failed');
+    console.error('generatePdf error:', e);
+  }
+}
+
+/** Form-header "Generate PDF": save latest edits silently, then generate. */
+function generatePdfCurrent() {
+  saveRecord(true);                 // capture latest edits (silent — no reminder)
+  generatePdfFromRecord(currentRecord);
+}
+
+/** Dashboard-card "Generate PDF": generate directly from the saved record. */
+function generatePdfById(id) {
   const rec = getAll().find(r => r.id === id);
   if (!rec) { showToast('Record not found'); return; }
-  currentRecord = rec;
-  populateForm(rec);
-  populatePrintView(rec);
-  showScreen('formView');
-  window.print();
+  generatePdfFromRecord(rec);
 }
 
-/**
- * Injects record data and company setup into the print-only HTML elements.
- * These elements are hidden in the browser view but revealed by @media print.
- *
- * This function is the bridge between the JavaScript data model and the
- * print layout. If you add a new field to blankRecord(), add it here too.
- *
- * @param {object} r — the record object to print
- */
-function populatePrintView(r) {
-  const s = getSetup();
-
-  // ── Print Header ──
-  const printLogo = document.getElementById('printLogo');
-  if (s.logo) {
-    printLogo.src           = s.logo;
-    printLogo.style.display = 'block';
-  } else {
-    printLogo.style.display = 'none';
-  }
-
-  // ── Print Footer ──
-  document.getElementById('pfAddress').textContent =
-    [s.address, s.cityState].filter(Boolean).join(', ');
-  document.getElementById('pfPhone').textContent = s.phone || '';
-  document.getElementById('pfEmail').textContent = s.email || '';
-
-  // ── Print Fields ──
-  // Helper to set a print field value by element id
-  const pv = (id, val) => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = val || '';
-  };
-
-  // Populate the 'Page 1 of ___' field in the print header
-  const totalPagesEl = document.getElementById('prTotalPages');
-  if (totalPagesEl) totalPagesEl.textContent = r.totalPages || '___';
-
-  pv('prJobNumber',      r.jobNumber);
-  pv('prJobName',        r.jobName);
-  pv('prDate',           r.date);
-  pv('prWorkLocation',   r.workLocation);
-  pv('prYourName',       r.yourName);
-  pv('prCrew',           r.crew);
-  pv('prTimeIn',         formatTime(r.timeIn));
-  pv('prTimeOut',        formatTime(r.timeOut));
-  pv('prLunch',          r.lunchMins ? r.lunchMins + ' min' : '');
-  pv('prTotalHours',     r.totalHours ? r.totalHours + ' hrs' : '');
-  pv('prVisitors',       r.visitors);
-  pv('prNativeMonitor',  r.nativeMonitor);
-  pv('prConstructionCrew', r.constructionCrew);
-  pv('prVehicle',        r.vehicle);
-  pv('prStartLocation',  r.startLocation);
-  pv('prTotalMiles',     r.totalMiles);
-  pv('prWorkReport',     r.workReport);
-
-  // ── Work Type checkboxes ──
-  // Build each checkbox as a small box with an X when checked
-  const wtEl = document.getElementById('prWorkType');
-  const types = [
-    { label: 'Survey',                    val: r.wtSurvey  },
-    { label: 'Archaeological Excavation', val: r.wtArch    },
-    { label: 'Monitoring',                val: r.wtMonitor },
-    { label: r.wtOtherText || 'Other',    val: r.wtOther   },
-  ];
-  wtEl.innerHTML = '<span class="print-attach-label">Work Type:</span>' +
-    types.map(t => `
-      <span class="print-wt-item">
-        <span class="print-wt-box">${t.val ? 'X' : ''}</span>
-        ${esc(t.label)}
-      </span>
-    `).join('');
-
-  // ── Attachment checkboxes ──
-  // Now targets the fixed-position printAttachRow div (outside printContent)
-  const attEl = document.getElementById('printAttachRow');
-  const atts = [
-    { label: 'Photo Log',           val: r.attPhoto },
-    { label: 'Map',                 val: r.attMap   },
-    { label: 'Supplementary Sheets', val: r.attSupp },
-    { label: 'GPS Log',             val: r.attGps   },
-    // Show attOtherText as the label when Other is checked and text exists
-    { label: r.attOtherText ? 'Other: ' + r.attOtherText : 'Other', val: r.attOther },
-  ];
-  attEl.innerHTML = '<span class="print-attach-label">Attachments:</span>' +
-    atts.map(a => `
-      <span class="print-wt-item">
-        <span class="print-wt-box">${a.val ? 'X' : ''}</span>
-        ${esc(a.label)}
-      </span>
-    `).join('');
-}
-
-/**
- * Formats a 24-hour HH:MM string to 12-hour AM/PM for readable print output.
- * '08:00' → '8:00 AM', '13:30' → '1:30 PM'
- *
- * @param {string} t — time string in HH:MM format
- * @returns {string} formatted time or empty string if input is blank
- */
-function formatTime(t) {
-  if (!t) return '';
-  const [h, m] = t.split(':').map(Number);
-  const suffix = h >= 12 ? 'PM' : 'AM';
-  const hour   = h % 12 || 12;
-  return `${hour}:${String(m).padStart(2, '0')} ${suffix}`;
-}
 
 
 // ── EXPORT / IMPORT ───────────────────────────────────────────────────────────
@@ -2641,5 +2699,19 @@ function showToast(msg) {
   setTimeout(() => toast.classList.remove('show'), 2500);
 }
 </script>
+
+<!-- ============================================================
+     VENDORED LIBRARIES (v2.5.0 — Production PDF path)
+     Local files only — NO CDN — so the tool still works offline.
+     Pinned pdfmake version and license are recorded in README.md.
+       - pdfmake.min.js : pdfmake 0.2.23 (MIT)  — PDF engine
+       - vfs_fonts.js   : Roboto fonts for pdfmake (auto-registers)
+       - build-doc.js   : buildDocDefinition() — the DFWR PDF layout
+     Loaded AFTER the main script; the Generate PDF buttons call into
+     these only on click, so load order is safe.
+     ============================================================ -->
+<script src="pdfmake.min.js"></script>
+<script src="vfs_fonts.js"></script>
+<script src="build-doc.js"></script>
 </body>
 </html>
