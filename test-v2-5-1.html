@@ -2661,7 +2661,10 @@ async function exportBackup() {
 
     if (canShareFile) {
       try {
-        await navigator.share({ title: 'DFWR Backup', files: [backupFile] });
+        // Share the file only — no title. iOS counts a title as a second
+        // share item (shows "2 Items"); the filename is carried by
+        // backupFile.name, so nothing is lost by omitting it.
+        await navigator.share({ files: [backupFile] });
         return;
       } catch (error) {
         // Closing the share sheet is a user cancellation, not an app error.
