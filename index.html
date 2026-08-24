@@ -9,8 +9,18 @@
 
   <!--
   ============================================================
-  DAILY FIELD WORK RECORD — v2.5.0  (Production: single PDF output)
+  DAILY FIELD WORK RECORD — v2.5.1  (Production: iOS-compatible JSON backup export)
   Labor Compliance Solutions
+  ------------------------------------------------------------
+  v2.5.1 (bug fix, iOS export): exportBackup() now delivers the JSON backup
+  via a capability-based two-path method — the native OS share sheet when the
+  browser reports it can share a File (Save to Files / AirDrop / Email on iOS;
+  the Windows share panel on Chrome/Edge), and a Blob object-URL download
+  otherwise (e.g. desktop Firefox). This replaces the old data:application/json
+  anchor, which silently failed on iOS Safari (iPhone and iPad). An in-progress
+  guard prevents repeated taps from opening multiple share operations.
+  Unchanged: JSON structure, filename convention, storage keys, importBackup(),
+  PDF generation, and the record schema.
   ------------------------------------------------------------
   OUTPUT ARCHITECTURE
   The report is generated as a PDF with pdfmake (vendored locally in
@@ -2583,30 +2593,113 @@ function generatePdfById(id) {
  *
  * The time (HHMM) is appended so multiple exports on the same day
  * produce unique filenames and don't overwrite each other.
+ *
+ * DELIVERY (v2.5.1): capability-based, two paths.
+ *   1. If the browser confirms it can share the JSON File
+ *      (navigator.canShare({ files })), open the native OS share sheet —
+ *      Save to Files / AirDrop / Email on iOS, the Windows share panel on
+ *      Chrome/Edge.
+ *   2. Otherwise, download via a Blob object URL (e.g. desktop Firefox).
+ *   This replaces the old data:application/json anchor, which silently
+ *   failed on iOS Safari. Detection is by capability, never user-agent.
  */
-function exportBackup() {
-  const all  = getAll();
-  const data = JSON.stringify(all, null, 2);
 
-  // Determine filename project reference
-  const names   = [...new Set(all.map(r => r.jobName).filter(Boolean))];
-  const numbers = [...new Set(all.map(r => r.jobNumber).filter(Boolean))];
-  let ref = names.length === 1   ? names[0]
-          : numbers.length === 1 ? numbers[0]
-          : all.length > 0       ? 'multi'
-          : '';
-  const safeRef = ref
-    ? '-' + ref.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 30)
-    : '';
+// Guard: set synchronously on the first tap so repeated taps cannot open
+// multiple share operations (a second navigator.share() would reject with
+// InvalidStateError). Reset in finally after success, cancellation, or error.
+let exportBackupInProgress = false;
 
-  const now  = new Date();
-  const date = now.toISOString().slice(0, 10);
-  const time = now.toTimeString().slice(0, 5).replace(':', '');
+async function exportBackup() {
+  if (exportBackupInProgress) {
+    return;
+  }
 
-  const a = document.createElement('a');
-  a.href     = 'data:application/json;charset=utf-8,' + encodeURIComponent(data);
-  a.download = 'dfwr' + safeRef + '_backup-' + date + '-' + time + '.json';
-  a.click();
+  exportBackupInProgress = true;
+
+  try {
+    const all  = getAll();
+    const data = JSON.stringify(all, null, 2);
+
+    // Determine filename project reference
+    const names   = [...new Set(all.map(r => r.jobName).filter(Boolean))];
+    const numbers = [...new Set(all.map(r => r.jobNumber).filter(Boolean))];
+    let ref = names.length === 1   ? names[0]
+            : numbers.length === 1 ? numbers[0]
+            : all.length > 0       ? 'multi'
+            : '';
+    const safeRef = ref
+      ? '-' + ref.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 30)
+      : '';
+
+    const now  = new Date();
+    const date = now.toISOString().slice(0, 10);
+    const time = now.toTimeString().slice(0, 5).replace(':', '');
+
+    const filename = 'dfwr' + safeRef + '_backup-' + date + '-' + time + '.json';
+
+    const mimeType = 'application/json';
+    const blob = new Blob([data], { type: mimeType });
+
+    // Prefer the native share sheet only when the browser confirms it can
+    // share this specific file. Checking navigator.share alone is insufficient:
+    // a browser may support sharing text/URLs but not files.
+    let backupFile   = null;
+    let canShareFile = false;
+
+    if (typeof File === 'function') {
+      backupFile = new File([blob], filename, { type: mimeType });
+
+      try {
+        canShareFile =
+          typeof navigator.share === 'function' &&
+          typeof navigator.canShare === 'function' &&
+          navigator.canShare({ files: [backupFile] });
+      } catch (error) {
+        canShareFile = false;
+      }
+    }
+
+    if (canShareFile) {
+      try {
+        // Share the file only — no title. iOS counts a title as a second
+        // share item (shows "2 Items"); the filename is carried by
+        // backupFile.name, so nothing is lost by omitting it.
+        await navigator.share({ files: [backupFile] });
+        return;
+      } catch (error) {
+        // Closing the share sheet is a user cancellation, not an app error.
+        if (error.name === 'AbortError') {
+          return;
+        }
+        // Do NOT fall back to the Blob download here: the original tap's
+        // transient user activation has already been consumed by
+        // navigator.share(), so a programmatic download would be unreliable.
+        console.error('DFWR backup sharing failed:', error);
+        showToast('Backup export failed. Please try again.');
+        return;
+      }
+    }
+
+    // Fallback for browsers without native file sharing (e.g. desktop Firefox).
+    const url    = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+
+    anchor.href          = url;
+    anchor.download      = filename;
+    anchor.style.display = 'none';
+
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    // Delay cleanup so the browser has time to consume the object URL.
+    setTimeout(() => { URL.revokeObjectURL(url); }, 1000);
+  } catch (error) {
+    console.error('DFWR backup export failed:', error);
+    showToast('Backup export failed. Please try again.');
+  } finally {
+    exportBackupInProgress = false;
+  }
 }
 
 /**
